@@ -6,6 +6,8 @@ NPROC=${NPROC:-4}
 MASTER_PORT=${MASTER_PORT:-12335}
 # ===== dataset ====== #
 #### PROCTHOR ####
+PROJECT_ROOT=${PROJECT_ROOT:-/path/to/your/project}
+export PYTHONPATH=${PYTHONPATH:-}:${PROJECT_ROOT}/src/open-r1-multimodal/src
 DATA_JSONL=${DATA_JSONL:-/path/to/data/avs_procthor_train.jsonl}
 IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
 cd src/open-r1-multimodal

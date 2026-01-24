@@ -6,6 +6,8 @@ echo "Using Python: $(which python)"
 echo "Python version: $(python --version)"
 
 #CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+PROJECT_ROOT=${PROJECT_ROOT:-/path/to/your/project}
+export PYTHONPATH=${PYTHONPATH:-}:${PROJECT_ROOT}/src/open-r1-multimodal/src
 DATA_JSONL=${DATA_JSONL:-/home/daehyeonchoi/embodied/AVS_release/data/avs_procthor_train.jsonl}
 IMG_ROOT=${IMG_ROOT:-/data/daehyeon/procthor_active_vqa} 
 
