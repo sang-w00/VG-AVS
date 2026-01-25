@@ -20,10 +20,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from datasets import Dataset
-from open_r1.qwen2_5vl_monkey_patch import (
-    monkey_patch_qwen2_5vl_flash_attn,
-    monkey_patch_torch_load,
-)
 from open_r1.trainer import GRPOConfig, VLMGRPOTrainer
 from open_r1.utils.model_load import get_vlm_module
 from open_r1.utils.prompt_templates import ACTION_PROMPT_TEMPLATE, GRPO_FORMAT_PROMPT, SFT_GRPO_FORMAT_PROMPT
@@ -37,8 +33,23 @@ from open_r1.utils.rewards import (
 from transformers.utils import logging
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 
-monkey_patch_qwen2_5vl_flash_attn()
-monkey_patch_torch_load()
+# Monkey patches will be applied conditionally based on model type
+_QWEN_PATCHES_APPLIED = False
+
+def apply_qwen_patches_if_needed(model_name_or_path: str):
+    """Apply Qwen-specific monkey patches only for Qwen models."""
+    global _QWEN_PATCHES_APPLIED
+    if _QWEN_PATCHES_APPLIED:
+        return
+    if "qwen" in model_name_or_path.lower():
+        from open_r1.qwen2_5vl_monkey_patch import (
+            monkey_patch_qwen2_5vl_flash_attn,
+            monkey_patch_torch_load,
+        )
+        monkey_patch_qwen2_5vl_flash_attn()
+        monkey_patch_torch_load()
+        _QWEN_PATCHES_APPLIED = True
+        print(f"[INFO] Applied Qwen monkey patches for model: {model_name_or_path}")
 
 logger = logging.get_logger(__name__)
 
@@ -152,6 +163,9 @@ class GRPOModelConfig(ModelConfig):
 def main(script_args, training_args, model_args):
     # Get local_rank for debug output control
     local_rank = int(os.getenv("LOCAL_RANK", "0"))
+    
+    # Apply Qwen-specific patches if needed
+    apply_qwen_patches_if_needed(model_args.model_name_or_path)
     
     # Load the VLM module
     vlm_module_cls = get_vlm_module(model_args.model_name_or_path)

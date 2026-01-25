@@ -298,12 +298,13 @@ class VLMGRPOTrainer(Trainer):
             # If beta is 0.0, the reference model is not needed
             self.ref_model = None
         elif is_deepspeed_zero3_enabled():
-            # Use Qwen2.5 VL registration instead of legacy Qwen2 VL
-            try:
-                from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
-                AutoModelForCausalLM.register(config_class=Qwen2_5_VLConfig, model_class=Qwen2_5_VLForConditionalGeneration)
-            except Exception as e:
-                print(f"[WARN] Qwen2.5 VL registration failed ({e}); falling back to existing class registration.")
+            # Use Qwen2.5 VL registration only for Qwen models
+            if "qwen" in model_id.lower():
+                try:
+                    from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
+                    AutoModelForCausalLM.register(config_class=Qwen2_5_VLConfig, model_class=Qwen2_5_VLForConditionalGeneration)
+                except Exception as e:
+                    print(f"[WARN] Qwen2.5 VL registration failed ({e}); falling back to existing class registration.")
             self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
         elif is_peft_model(model):
             # If PEFT is used, the reference model is not needed since the adapter can be disabled

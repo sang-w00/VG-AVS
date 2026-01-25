@@ -15,7 +15,7 @@ from open_r1.utils.gemini_utils import (
     run_gemini_verifier,
     normalize_verifier_answer,
 )
-from open_r1.utils.model_load import resolve_model_path
+from open_r1.utils.model_load import resolve_model_path, get_vlm_module
 from open_r1.utils.procthor_utils import build_additional_view, get_procthor_controller
 from open_r1.utils.prompt_templates import ACTION_PROMPT_TEMPLATE, GRPO_FORMAT_PROMPT, SFT_FORMAT_PROMPT, SFT_GRPO_FORMAT_PROMPT
 from open_r1.utils.rewards import _verifier_answer
@@ -26,7 +26,7 @@ from open_r1.utils.string_utils import (
 )
 from open_r1.utils.visualization import create_visualization
 from peft import PeftModel
-from transformers import AutoModelForVision2Seq, AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from transformers import AutoModelForVision2Seq, AutoProcessor
 from tqdm import tqdm
 
 
@@ -123,13 +123,21 @@ def main():
             "base_model_name_or_path", "Qwen/Qwen2.5-VL-7B-Instruct"
         )
         print(f"Base model: {base_model_name}")
-         # Detect model type from base model
+        # Detect model type from base model and get VLM module
+        vlm_module_cls = get_vlm_module(base_model_name)
+        print(f"Using VLM module: {vlm_module_cls.__name__}")
+        vlm_module = vlm_module_cls()
+        
+        model_init_kwargs = {
+            "torch_dtype": torch.bfloat16,
+            "trust_remote_code": True,
+            "ignore_mismatched_sizes": True,
+        }
+        model_cls = vlm_module.get_model_class(base_model_name, model_init_kwargs)
         print(f"Loading base model: {base_model_name}")
-        student_model = AutoModelForVision2Seq.from_pretrained(
+        student_model = model_cls.from_pretrained(
             base_model_name,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-            ignore_mismatched_sizes=True,
+            **model_init_kwargs
         )
         # Load LoRA adapter
         print(f"Loading LoRA adapter from: {args.model_path}")
@@ -138,21 +146,29 @@ def main():
         )
         print("✓ LoRA checkpoint loaded successfully")
     else:
-        # Load full model checkpoint
+        # Load full model checkpoint - detect model type
         print("Loading full model checkpoint...")
-
-        student_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        vlm_module_cls = get_vlm_module(args.model_path)
+        print(f"Using VLM module: {vlm_module_cls.__name__}")
+        vlm_module = vlm_module_cls()
+        
+        model_init_kwargs = {
+            "torch_dtype": torch.bfloat16,
+            "trust_remote_code": True,
+        }
+        model_cls = vlm_module.get_model_class(args.model_path, model_init_kwargs)
+        student_model = model_cls.from_pretrained(
             args.model_path,
-            torch_dtype=torch.bfloat16,
+            **model_init_kwargs
         )
 
     student_processor = AutoProcessor.from_pretrained(
         args.model_path, trust_remote_code=True
     )
-    # Set max_pixels and min_pixels if provided (must match training config)
-    if args.max_pixels is not None:
+    # Set max_pixels and min_pixels if provided (for Qwen models)
+    if args.max_pixels is not None and hasattr(student_processor, 'image_processor'):
         student_processor.image_processor.max_pixels = args.max_pixels
-    if args.min_pixels is not None:
+    if args.min_pixels is not None and hasattr(student_processor, 'image_processor'):
         student_processor.image_processor.min_pixels = args.min_pixels
 
     for p in student_model.parameters():

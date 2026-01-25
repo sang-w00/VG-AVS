@@ -29,11 +29,6 @@ import PIL
 import torch
 import numpy as np
 from datasets import Dataset
-from open_r1.qwen2_5vl_monkey_patch import (
-    monkey_patch_qwen2_5vl_flash_attn,
-    monkey_patch_qwen2_5vl_forward,
-    monkey_patch_torch_load,
-)
 from open_r1.utils.model_load import get_vlm_module
 from open_r1.utils.prompt_templates import (
     ACTION_PROMPT_TEMPLATE,
@@ -42,10 +37,24 @@ from open_r1.utils.prompt_templates import (
 from open_r1.vlm_modules import *
 from transformers import Trainer, TrainingArguments
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
-from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, monkey_patch_qwen2_5vl_forward, monkey_patch_torch_load
 
-monkey_patch_qwen2_5vl_flash_attn()    
-monkey_patch_torch_load()
+# Monkey patches will be applied conditionally based on model type
+_QWEN_PATCHES_APPLIED = False
+
+def apply_qwen_patches_if_needed(model_name_or_path: str):
+    """Apply Qwen-specific monkey patches only for Qwen models."""
+    global _QWEN_PATCHES_APPLIED
+    if _QWEN_PATCHES_APPLIED:
+        return
+    if "qwen" in model_name_or_path.lower():
+        from open_r1.qwen2_5vl_monkey_patch import (
+            monkey_patch_qwen2_5vl_flash_attn,
+            monkey_patch_torch_load,
+        )
+        monkey_patch_qwen2_5vl_flash_attn()
+        monkey_patch_torch_load()
+        _QWEN_PATCHES_APPLIED = True
+        print(f"[INFO] Applied Qwen monkey patches for model: {model_name_or_path}")
 
 
 @dataclass
@@ -243,6 +252,9 @@ class ProcTHORSFTTrainer(Trainer):
 def main(script_args, training_args, model_args):
     # Ensure we don't remove unused columns since we use custom data collator
     training_args.remove_unused_columns = False
+    
+    # Apply Qwen-specific patches if needed
+    apply_qwen_patches_if_needed(model_args.model_name_or_path)
     
     # Load the VLM module
     vlm_module_cls = get_vlm_module(model_args.model_name_or_path)
@@ -448,8 +460,11 @@ if __name__ == "__main__":
     parser = TrlParser((SFTScriptArguments, TrainingArguments, SFTModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
     
+    # Apply Qwen-specific patches for Zero3 if using Qwen model
     if training_args.deepspeed and "zero3" in training_args.deepspeed:
-        print("Zero3 is used, applying qwen2_5vl forward monkey patch")
-        monkey_patch_qwen2_5vl_forward()
+        if "qwen" in model_args.model_name_or_path.lower():
+            from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_forward
+            print("Zero3 is used with Qwen model, applying qwen2_5vl forward monkey patch")
+            monkey_patch_qwen2_5vl_forward()
     
     main(script_args, training_args, model_args)
