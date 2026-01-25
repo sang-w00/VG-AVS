@@ -6,13 +6,13 @@ echo "Using Python: $(which python)"
 echo "Python version: $(python --version)"
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
-DATA_JSONL=${DATA_JSONL:-/path/to/data/avs_procthor_train.jsonl}
-IMG_ROOT=${IMG_ROOT:-/path/to/dataset} 
+DATA_JSONL=${DATA_JSONL:-/workspace/VG-AVS/data/avs_procthor_train.jsonl}
+IMG_ROOT=${IMG_ROOT:-/workspace/VG-AVS/data} 
 
 cd src/open-r1-multimodal
 
 # Configuration - InternVL3 8B
-BASE_MODEL=${BASE_MODEL:-OpenGVLab/InternVL3-8B}
+BASE_MODEL=${BASE_MODEL:-/workspace/VG-AVS/src/open-r1-multimodal/output/sft-procthor-internvl3/checkpoint-413}
 GRPO_RUN_NAME=${GRPO_RUN_NAME:-grpo-procthor-internvl3}
 
 # Torch/distributed settings
@@ -68,8 +68,8 @@ ${TORCHRUN} --nproc_per_node="8" \
   --grpo_reward_weights 0.3 1 \
   --num_generations 16 \
   --beta 0.04 \
-  --per_device_train_batch_size 8 \
-  --gradient_accumulation_steps 2 \
+  --per_device_train_batch_size 16 \
+  --gradient_accumulation_steps 1 \
   --logging_steps 1 \
   --freeze_vision_modules true \
   --bf16 \

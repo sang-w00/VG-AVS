@@ -374,14 +374,10 @@ def main(script_args, training_args, model_args):
             except Exception as e:
                 if DEBUG_MODE and local_rank == 0:
                     print(f"[warn] Failed to save validation split to {save_path}: {e}")
-    elif script_args.save_validation_path:
-        print(
-            "[warn] save_validation_path is set but val_split_ratio == 0; no validation split to save."
-        )
 
-
-    else:
-        trainer_cls = VLMGRPOTrainer
+    # Create VLM module instance and trainer
+    vlm_module = vlm_module_cls()
+    trainer_cls = VLMGRPOTrainer
     if DEBUG_MODE and local_rank == 0:
         print("using trainer:", trainer_cls.__name__)
     # Initialize the GRPO trainer
@@ -390,7 +386,7 @@ def main(script_args, training_args, model_args):
         reward_funcs=reward_funcs,
         reward_weights=reward_weights,
         args=training_args,
-        vlm_module=vlm_module_cls(),
+        vlm_module=vlm_module,
         train_dataset=splits["train"],
         eval_dataset=(
             splits.get("validation") if training_args.eval_strategy != "no" else None

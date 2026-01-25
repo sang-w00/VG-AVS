@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export CUDA_VISIBLE_DEVICES=0,1,2,3
-NPROC=${NPROC:-4}
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+NPROC=${NPROC:-8}
 MASTER_PORT=${MASTER_PORT:-12335}
 # ===== dataset ====== #
 #### PROCTHOR ####
-PROJECT_ROOT=${PROJECT_ROOT:-/path/to/your/project}
+PROJECT_ROOT=${PROJECT_ROOT:-/workspace/VG-AVS}
 export PYTHONPATH=${PYTHONPATH:-}:${PROJECT_ROOT}/src/open-r1-multimodal/src
-DATA_JSONL=${DATA_JSONL:-/path/to/data/avs_procthor_train.jsonl}
-IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
+DATA_JSONL=${DATA_JSONL:-/workspace/VG-AVS/data/avs_procthor_train.jsonl}
+IMG_ROOT=${IMG_ROOT:-/workspace/VG-AVS/data}
 cd src/open-r1-multimodal
 RUN_NAME=${RUN_NAME:-sft-procthor-internvl3}
 # InternVL3 8B model
@@ -29,7 +29,7 @@ VAL_SPLIT_SEED=${VAL_SPLIT_SEED:-42}
 MAX_ANYRES_NUM=${MAX_ANYRES_NUM:-12}
 # Training hyperparameters
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}
-GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-2}
+GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-1}
 LEARNING_RATE=${LEARNING_RATE:-2.0e-5}
 NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-7}
 LOGGING_STEPS=${LOGGING_STEPS:-10}

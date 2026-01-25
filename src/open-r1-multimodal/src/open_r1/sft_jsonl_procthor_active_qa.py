@@ -368,7 +368,8 @@ def main(script_args, training_args, model_args):
     model_init_kwargs["use_cache"] = False if training_args.gradient_checkpointing else model_init_kwargs.get("use_cache")
     model_init_kwargs["trust_remote_code"] = True
     
-    model_cls = vlm_module_cls().get_model_class(model_args.model_name_or_path, model_init_kwargs)
+    vlm_module = vlm_module_cls()
+    model_cls = vlm_module.get_model_class(model_args.model_name_or_path, model_init_kwargs)
     model = model_cls.from_pretrained(model_args.model_name_or_path, **model_init_kwargs)
     
     # Apply LoRA if specified
@@ -388,7 +389,7 @@ def main(script_args, training_args, model_args):
             lora_module_names.discard("embed_tokens")
             return list(lora_module_names)
         
-        vision_keywords = vlm_module_cls().get_vision_modules_keywords()
+        vision_keywords = vlm_module.get_vision_modules_keywords()
         target_modules = find_all_linear_names(model, vision_keywords)
         peft_config.target_modules = target_modules
         print(f"LoRA target modules: {len(target_modules)} modules")
@@ -397,7 +398,7 @@ def main(script_args, training_args, model_args):
     # Freeze vision modules if requested
     if model_args.freeze_vision_modules:
         print("Freezing vision modules...")
-        vision_keywords = vlm_module_cls().get_vision_modules_keywords()
+        vision_keywords = vlm_module.get_vision_modules_keywords()
         for n, p in model.named_parameters():
             if any(keyword in n for keyword in vision_keywords):
                 p.requires_grad = False
@@ -408,7 +409,7 @@ def main(script_args, training_args, model_args):
     print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
     
     # Initialize processing class
-    processing_cls = vlm_module_cls().get_processing_class()
+    processing_cls = vlm_module.get_processing_class()
     processing_class = processing_cls.from_pretrained(
         model_args.model_name_or_path,
         trust_remote_code=True
@@ -421,7 +422,11 @@ def main(script_args, training_args, model_args):
         if script_args.min_pixels is not None:
             processing_class.image_processor.min_pixels = script_args.min_pixels
     
-    vlm_module_cls().post_model_init(model, processing_class)
+    # Set max_anyres_num for InternVL
+    if script_args.max_anyres_num is not None:
+        processing_class.max_anyres_num = script_args.max_anyres_num
+    
+    vlm_module.post_model_init(model, processing_class)
     
     # Data collator - return items as-is
     def data_collator(features):
@@ -432,7 +437,7 @@ def main(script_args, training_args, model_args):
     trainer = ProcTHORSFTTrainer(
         model=model,
         args=training_args,
-        vlm_module=vlm_module_cls(),
+        vlm_module=vlm_module,
         processing_class=processing_class,
         train_dataset=splits['train'],
         eval_dataset=splits.get('validation') if training_args.eval_strategy != "no" else None,

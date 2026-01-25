@@ -183,7 +183,14 @@ def get_procthor_dataset(custom_house_path: Optional[Dict[str, Any]] = None, spl
             return _PROC_DATASET
         else:
             print("[procthor] Loading ProcTHOR-10k dataset...")
-            _PROC_DATASET = prior.load_dataset("procthor-10k")
+            # Save current working directory and change to home to avoid path issues
+            # with prior library during distributed training
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(os.path.expanduser("~"))
+                _PROC_DATASET = prior.load_dataset("procthor-10k")
+            finally:
+                os.chdir(original_cwd)
         print(f"[procthor] Dataset loaded: {len(_PROC_DATASET[split])} houses")
     return _PROC_DATASET
 
