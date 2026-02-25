@@ -20,7 +20,7 @@ GPU_DEVICE=${GPU_DEVICE:-9}
 STUDENT_DEVICE=${STUDENT_DEVICE:-cuda:9}
 
 # API Keys
-export GEMINI_API_KEY="AIzaSyD0CIn8kCOzJniUvCMjOoJkVLtCHxgy81k"
+export GEMINI_API_KEY=""
 #export OPENAI_API_KEY="<OPENAI_API_KEY>"  # Uncomment and set when using GPT
 
 echo "Testing ProcTHOR action prediction model..."
