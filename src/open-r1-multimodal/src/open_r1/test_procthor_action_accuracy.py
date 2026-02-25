@@ -161,6 +161,7 @@ def main():
     # Load student model (skip if input_view_for_verifier or gt_view_for_verifier mode)
     student_model = None
     student_processor = None
+    vlm_module = None  # VLM module for model-specific inference (InternVL, Qwen, etc.)
     use_gemini_action = False
     use_gpt_action = False
     gemini_action_model_id = None
@@ -249,6 +250,9 @@ def main():
             if args.min_pixels is not None and hasattr(student_processor, 'image_processor'):
                 student_processor.image_processor.min_pixels = args.min_pixels
 
+            # Call post_model_init for VLM module (needed for InternVL)
+            vlm_module.post_model_init(student_model, student_processor)
+            
             for p in student_model.parameters():
                 p.requires_grad_(False)
             student_model.to(args.device)
@@ -327,10 +331,15 @@ def main():
             if field not in item:
                 raise ValueError(f"Field {field} is required in the example")
 
-        # Get image path
+        # Get image path (join with image_root if path is relative)
         input_img_path = item["question_image"]
+        if args.image_root and not os.path.isabs(input_img_path):
+            input_img_path = os.path.join(args.image_root, input_img_path)
         assert os.path.exists(input_img_path), f"Input image not found: {input_img_path}"
+        
         gt_img_path = item["gt_image"]
+        if args.image_root and not os.path.isabs(gt_img_path):
+            gt_img_path = os.path.join(args.image_root, gt_img_path)
         assert os.path.exists(gt_img_path), f"GT image not found: {gt_img_path}"
 
         # gt action
@@ -547,43 +556,78 @@ def main():
                             ],
                         }
                     ]
-                    chat_text = student_processor.apply_chat_template(
-                        messages, tokenize=False, add_generation_prompt=True
-                    )
+                    
+                    # Use VLM module for model-specific input preparation (InternVL vs Qwen)
+                    if vlm_module is not None and hasattr(vlm_module, 'get_vlm_key') and vlm_module.get_vlm_key() == 'internvl':
+                        # InternVL-specific inference
+                        input_example = {"prompt": messages}
+                        prompts_text = vlm_module.prepare_prompt(student_processor, [input_example])
+                        inputs, _ = vlm_module.prepare_model_inputs(
+                            student_processor, prompts_text, [pil_img],
+                            return_tensors="pt", padding=True, padding_side="left"
+                        )
+                        # Move to device and convert pixel_values to model dtype (bfloat16)
+                        inputs = {
+                            k: v.to(args.device, dtype=torch.bfloat16) if isinstance(v, torch.Tensor) and v.is_floating_point() 
+                               else v.to(args.device) if isinstance(v, torch.Tensor) else v
+                            for k, v in inputs.items()
+                        }
+                        
+                        # Ensure model is in eval mode
+                        student_model.eval()
+                        
+                        # InternVL generate - filter out non-generate params
+                        non_gen_params = vlm_module.get_non_generate_params()
+                        gen_inputs = {k: v for k, v in inputs.items() if k not in non_gen_params}
+                        
+                        gen = student_model.generate(
+                            **gen_inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=False,
+                            eos_token_id=vlm_module.get_eos_token_id(student_processor),
+                        )
+                        student_output = student_processor.batch_decode(
+                            gen, skip_special_tokens=True
+                        )[0]
+                    else:
+                        # Qwen-style inference (default)
+                        chat_text = student_processor.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True
+                        )
 
-                    # Process inputs with specific parameters to avoid tensor issues
-                    inputs = student_processor(
-                        text=[chat_text],
-                        images=[pil_img],
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=4096,
-                    )
-                    inputs = {
-                        k: v.to(args.device) if isinstance(v, torch.Tensor) else v
-                        for k, v in inputs.items()
-                    }
+                        # Process inputs with specific parameters to avoid tensor issues
+                        inputs = student_processor(
+                            text=[chat_text],
+                            images=[pil_img],
+                            return_tensors="pt",
+                            padding=True,
+                            truncation=True,
+                            max_length=4096,
+                        )
+                        inputs = {
+                            k: v.to(args.device) if isinstance(v, torch.Tensor) else v
+                            for k, v in inputs.items()
+                        }
 
-                    # Ensure model is in eval mode and clear any cached states
-                    student_model.eval()
-                    if hasattr(student_model, "reset_cache"):
-                        student_model.reset_cache()
+                        # Ensure model is in eval mode and clear any cached states
+                        student_model.eval()
+                        if hasattr(student_model, "reset_cache"):
+                            student_model.reset_cache()
 
-                    # Add generation parameters to handle tensor dimension issues
-                    gen = student_model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
-                        do_sample=False,
-                        pad_token_id=student_processor.tokenizer.eos_token_id,
-                        use_cache=True,
-                        output_attentions=False,
-                        output_hidden_states=False,
-                        return_dict_in_generate=False,
-                    )
-                    student_output = student_processor.batch_decode(
-                        gen, skip_special_tokens=True
-                    )[0]
+                        # Add generation parameters to handle tensor dimension issues
+                        gen = student_model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=False,
+                            pad_token_id=student_processor.tokenizer.eos_token_id,
+                            use_cache=True,
+                            output_attentions=False,
+                            output_hidden_states=False,
+                            return_dict_in_generate=False,
+                        )
+                        student_output = student_processor.batch_decode(
+                            gen, skip_special_tokens=True
+                        )[0]
 
                 print(f"\n{'='*80}")
                 print("STUDENT OUTPUT:")

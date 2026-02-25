@@ -5,22 +5,22 @@ cd src/open-r1-multimodal
 
 # ===== Project Root =====
 # Change this path to your project root directory
-PROJECT_ROOT=${PROJECT_ROOT:-/path/to/project}
+PROJECT_ROOT=${PROJECT_ROOT:-/home/andy2884/workspace/VG-AVS}
 
-MODEL_PATH=${MODEL_PATH:-${PROJECT_ROOT}/src/open-r1-multimodal/output/grpo-procthor}
+MODEL_PATH=${MODEL_PATH:-/home/andy2884/workspace/VG-AVS/model/grpo-procthor-sft20-refine-internvl-0125-3epoch}
 
-IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
+IMG_ROOT=${IMG_ROOT:-/home/andy2884/workspace/VG-AVS/data}
 NUM_SAMPLES=${NUM_SAMPLES:--1} # use all samples
 
 # Verifier settings
-#CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-6}
+# CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 VERIFIER_MODEL=${VERIFIER_MODEL:-gemini-2.5-flash}
-VERIFIER_DEVICE=${VERIFIER_DEVICE:-cuda:0}
-GPU_DEVICE=${GPU_DEVICE:-0}
-STUDENT_DEVICE=${STUDENT_DEVICE:-cuda:0}
+VERIFIER_DEVICE=${VERIFIER_DEVICE:-cuda:9}
+GPU_DEVICE=${GPU_DEVICE:-9}
+STUDENT_DEVICE=${STUDENT_DEVICE:-cuda:9}
 
 # API Keys
-export GEMINI_API_KEY="<GEMINI_API_KEY>"
+export GEMINI_API_KEY="AIzaSyD0CIn8kCOzJniUvCMjOoJkVLtCHxgy81k"
 #export OPENAI_API_KEY="<OPENAI_API_KEY>"  # Uncomment and set when using GPT
 
 echo "Testing ProcTHOR action prediction model..."
@@ -39,28 +39,9 @@ OUTPUT_DIR=./output/${MODEL_NAME}/existence_eval/$(date +%Y%m%d_%H%M%S)
 
 export PYTHONPATH=${PYTHONPATH:-}:${PROJECT_ROOT}/src/open-r1-multimodal/src
 
-python src/open_r1/test_procthor_action_accuracy.py \
-  --model_path "${MODEL_PATH}" \
-  --test_jsonl "${EXISTENCE_TEST_JSONL}" \
-  --output_dir "${OUTPUT_DIR}" \
-  --num_samples ${NUM_SAMPLES} \
-  --verifier_model ${VERIFIER_MODEL} \
-  --max_new_tokens 256 \
-  --verifier_max_tokens 48 \
-  --device ${STUDENT_DEVICE} \
-  --verifier_device ${VERIFIER_DEVICE} \
-  --gpu_device ${GPU_DEVICE} \
-  --use_gemini_verifier \
-  --image_root "${IMG_ROOT}" \
-
-
-# counting
-
-# OUTPUT_DIR=./output/${MODEL_NAME}/counting_eval/$(date +%Y%m%d_%H%M%S)
 # python src/open_r1/test_procthor_action_accuracy.py \
 #   --model_path "${MODEL_PATH}" \
-#   --test_jsonl "${COUNTING_TEST_JSONL}" \
-#   --image_root "${IMG_ROOT}" \
+#   --test_jsonl "${EXISTENCE_TEST_JSONL}" \
 #   --output_dir "${OUTPUT_DIR}" \
 #   --num_samples ${NUM_SAMPLES} \
 #   --verifier_model ${VERIFIER_MODEL} \
@@ -70,8 +51,28 @@ python src/open_r1/test_procthor_action_accuracy.py \
 #   --verifier_device ${VERIFIER_DEVICE} \
 #   --gpu_device ${GPU_DEVICE} \
 #   --use_gemini_verifier \
-#   --custom_house_path ${PROJECT_ROOT}/data/avs_procthor_val_count.jsonl.gz \
+#   --image_root "${IMG_ROOT}" \
+#   --use_refine
 
+
+# counting
+
+OUTPUT_DIR=./output/${MODEL_NAME}/counting_eval/$(date +%Y%m%d_%H%M%S)
+python src/open_r1/test_procthor_action_accuracy.py \
+  --model_path "${MODEL_PATH}" \
+  --test_jsonl "${COUNTING_TEST_JSONL}" \
+  --image_root "${IMG_ROOT}" \
+  --output_dir "${OUTPUT_DIR}" \
+  --num_samples ${NUM_SAMPLES} \
+  --verifier_model ${VERIFIER_MODEL} \
+  --max_new_tokens 256 \
+  --verifier_max_tokens 48 \
+  --device ${STUDENT_DEVICE} \
+  --verifier_device ${VERIFIER_DEVICE} \
+  --gpu_device ${GPU_DEVICE} \
+  --use_gemini_verifier \
+  --custom_house_path ${PROJECT_ROOT}/data/val_count_1106.jsonl.gz \
+  --use_refine
 
 
 
@@ -91,6 +92,7 @@ python src/open_r1/test_procthor_action_accuracy.py \
 #   --verifier_device ${VERIFIER_DEVICE} \
 #   --gpu_device ${GPU_DEVICE} \
 #   --use_gemini_verifier \
+#   --use_refine 
 
 
 

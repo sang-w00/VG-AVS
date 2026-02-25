@@ -128,8 +128,12 @@ class InvernVLModule(VLMBaseModule):
         # Process images
         full_pixel_values = []
         num_patches_list = []
+        # Get max_anyres_num from processing_class, model_config, or use default value (12)
+        max_anyres_num = getattr(processing_class, 'max_anyres_num', None)
+        if max_anyres_num is None:
+            max_anyres_num = getattr(self.model_config, 'max_anyres_num', 12)
         for img in images:
-            pixel_values = self._load_image(img, input_size=self.model_config.vision_config.image_size, max_num=processing_class.max_anyres_num)
+            pixel_values = self._load_image(img, input_size=self.model_config.vision_config.image_size, max_num=max_anyres_num)
             full_pixel_values.append(pixel_values)
             num_patches_list.append(pixel_values.shape[0])
         full_pixel_values = torch.cat(full_pixel_values, dim=0)

@@ -180,6 +180,7 @@ output/
 test_outputs/
 rec_jsons_processed/
 visualizations/
+model/
 
 test/
 images_eval/
