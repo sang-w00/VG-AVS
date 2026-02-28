@@ -125,7 +125,7 @@ def _verifier_answer(images: List, question: str, verifier_model=None, verifier_
         }]
         chat_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = processor(text=[chat_text], images=pil_images, return_tensors="pt").to(model.device)
-        gen = model.generate(**inputs, max_new_tokens=32, do_sample=False)
+        gen = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
         out = processor.batch_decode(gen, skip_special_tokens=True)[0]
         
         ans_blocks = re.findall(r'<answer>(.*?)</answer>', out, re.DOTALL | re.IGNORECASE)
@@ -1107,5 +1107,4 @@ def action_accuracy_reward(completions, solution, **kwargs):
                     if DEBUG_MODE and _get_local_rank() == 0:
                         print(f"[DEBUG] Failed to save visualization: {e}")
     return rewards
-
 

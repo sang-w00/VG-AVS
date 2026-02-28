@@ -35,7 +35,7 @@ def resolve_model_path(raw_path: str) -> str:
     return ALIAS_MAP.get(key, raw_path)
 
 
-def initialize_verifier():
+def initialize_verifier(device=None):
     """Lazy load frozen verifier model (Qwen2.5-VL) for action-based accuracy reward.
 
     Can override model path via VERIFIER_MODEL_PATH env var. Supported aliases: qwen2.5vl:3b, qwen2.5vl:7b
@@ -48,20 +48,27 @@ def initialize_verifier():
         if "Instruct" not in target_path and "-Instruct" not in target_path:
             if target_path.endswith("-7B") or target_path.endswith("-3B"):
                 candidates.append(target_path + "-Instruct")
-        # Choose explicit device to avoid device_map/accelerate dispatch conflicts under ZeRO-3
-        env_device = os.getenv("VERIFIER_DEVICE", "auto").lower()
-        local_rank = int(os.getenv("LOCAL_RANK", "0"))
-        if env_device == "cpu":
-            chosen_device = "cpu"
-        elif env_device.startswith("cuda") and torch.cuda.is_available():
-            # Allow VERIFIER_DEVICE=cuda or cuda:<idx>
-            if ":" in env_device:
-                chosen_device = env_device
-            else:
-                chosen_device = f"cuda:{local_rank}"
+        
+        # Choose explicitly requested device if passed, else fallback
+        if device is not None:
+            chosen_device = str(device)
+            local_rank = int(os.getenv("LOCAL_RANK", "0"))
+            env_device = "explicit_kwarg"
         else:
-            # auto: prefer current rank GPU if available else CPU
-            chosen_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+            # Choose explicit device to avoid device_map/accelerate dispatch conflicts under ZeRO-3
+            env_device = os.getenv("VERIFIER_DEVICE", "auto").lower()
+            local_rank = int(os.getenv("LOCAL_RANK", "0"))
+            if env_device == "cpu":
+                chosen_device = "cpu"
+            elif env_device.startswith("cuda") and torch.cuda.is_available():
+                # Allow VERIFIER_DEVICE=cuda or cuda:<idx>
+                if ":" in env_device:
+                    chosen_device = env_device
+                else:
+                    chosen_device = f"cuda:{local_rank}"
+            else:
+                # auto: prefer current rank GPU if available else CPU
+                chosen_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
 
         print(
             f"[action_accuracy] Verifier device selection: {chosen_device} (env: {env_device}, local_rank: {local_rank})"
@@ -111,6 +118,15 @@ def initialize_verifier():
                 )
                 verifier_model.to("cpu")
             verifier_model.eval()
+            # Normalize generation config for greedy decoding to avoid warning spam and extra overhead.
+            gen_cfg = getattr(verifier_model, "generation_config", None)
+            if gen_cfg is not None:
+                gen_cfg.do_sample = False
+                gen_cfg.temperature = None
+                gen_cfg.top_p = None
+                gen_cfg.top_k = None
+                gen_cfg.min_p = None
+                gen_cfg.typical_p = None
             for p in verifier_model.parameters():
                 p.requires_grad_(False)
             break

@@ -46,3 +46,55 @@ SFT_FORMAT_PROMPT = (
     "The text between <head> and </head> must be the rotation angle in degrees (-180, 180], <fwd> and </fwd> must be the nonnegative forward distance, and <view> and </view> must be the final viewing angle in degrees (-180, 180].\n"
     "Each must be exactly one integer number (no units, no extra text).\n"
 )
+
+# =============================================================================
+# Multi-Step Navigation Prompts
+# =============================================================================
+
+# Multi-step system prompt: explains multi-step navigation with think + move/stop/unknown
+MULTISTEP_ACTION_PROMPT_TEMPLATE = (
+    "You are an embodied agent navigating a 3D scene from an egocentric camera.\n"
+    "Given the current view image, a question about the scene, and your navigation history, "
+    "decide whether to move to a better viewpoint or stop if you have enough information.\n"
+    "\n"
+    "Action parameters (return integers only):\n"
+    "1) Heading rotation (deg) in [-90, 90]: Azimuth yaw about your vertical axis BEFORE moving.\n"
+    "   Positive = clockwise/right, negative = counterclockwise/left, 0 = no rotation.\n"
+    "2) Forward distance (cm) >= 0: Move forward in the NEW facing direction after the rotation. 0 = no move.\n"
+    "3) View rotation (deg) in [-90, 90]: Final azimuth adjustment AFTER moving, relative to your post-move heading.\n"
+    "   Same sign convention as rotation.\n"
+    "\n"
+    "At each step you must choose one:\n"
+    "  - MOVE: Output action parameters to navigate to a better viewpoint.\n"
+    "  - STOP: If the current view already provides enough information to answer the question.\n"
+    "  - UNKNOWN: If information is insufficient to decide a reliable move direction.\n"
+    "\n"
+    "Question: {question}\n"
+    "DO NOT answer the question; ONLY output MOVE/STOP/UNKNOWN, and if moving, predict the action parameters.\n"
+)
+
+# Multi-step format prompt
+MULTISTEP_FORMAT_PROMPT = (
+    "First, output the reasoning process in <think> </think> tags.\n"
+    "Then, output your decision directly using one of the formats below.\n"
+    "\n"
+    "If you decide to MOVE, output exactly these three tags in order:\n"
+    "<think> your reasoning </think>\n"
+    "<head> X </head> <fwd> Y </fwd> <view> Z </view>\n"
+    "\n"
+    "If you decide to STOP (current view is sufficient), output:\n"
+    "<think> your reasoning </think>\n"
+    "<stop>\n"
+    "\n"
+    "If information is insufficient to decide, output:\n"
+    "<think> your reasoning </think>\n"
+    "<unknown>\n"
+    "\n"
+    "The text between <head> and </head> must be the angle in degrees [-90, 90], "
+    "<fwd> and </fwd> must be the nonnegative forward distance, "
+    "and <view> and </view> must be the final viewing angle in degrees [-90, 90].\n"
+    "For STOP/UNKNOWN decisions, output only the single tag <stop> or <unknown> without a closing tag.\n"
+    "Each must be exactly one integer number (no units, no extra text).\n"
+    "In the reasoning process, explicitly reason about whether you have enough information to answer the question "
+    "from the current view, or if you need to move to a better viewpoint.\n"
+)

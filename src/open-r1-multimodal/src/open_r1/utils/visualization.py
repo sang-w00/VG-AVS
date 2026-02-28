@@ -1,7 +1,6 @@
-from PIL import Image, ImageDraw, ImageFont
-from typing import List, Optional
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+from typing import Any, List, Optional
 import os
-from PIL import Image, ImageDraw, ImageFont
 import textwrap
 
 
@@ -184,3 +183,217 @@ def create_visualization(
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     canvas.save(output_path)
     print(f"Saved visualization: {output_path}")
+
+
+def _to_pil_image(img_or_path: Image.Image | str | None) -> Optional[Image.Image]:
+    """Convert a path or PIL image to RGB PIL image."""
+    if img_or_path is None:
+        return None
+    if isinstance(img_or_path, Image.Image):
+        return img_or_path.convert("RGB")
+    if isinstance(img_or_path, str):
+        try:
+            return Image.open(img_or_path).convert("RGB")
+        except Exception:
+            return None
+    return None
+
+
+def _safe_wrap(text: str, width: int) -> str:
+    """Wrap multiline text while preserving explicit new lines."""
+    if text is None:
+        return ""
+    raw = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    wrapped: List[str] = []
+    for part in raw.split("\n"):
+        part = part.strip()
+        if not part:
+            wrapped.append("")
+            continue
+        wrapped.extend(textwrap.wrap(part, width=max(8, width)))
+    return "\n".join(wrapped).strip()
+
+
+def create_multistep_rollout_visualization(
+    input_images: Image.Image | str | List[Image.Image | str] | None,
+    trajectory_steps: List[dict[str, Any]],
+    vqa_question: str,
+    verifier_answer: Optional[str],
+    gt_answer: Optional[str],
+    verifier_reward: Optional[float],
+    output_path: str,
+    target_visibility: Optional[str] = None,
+    turn_type: Optional[str] = None,
+    gt_image: Image.Image | str | None = None,
+):
+    """Create a single-image summary of a multistep rollout trajectory.
+    
+    Shows observation images the model sees at each step, matching SFT training flow.
+    - Step 1: input image (anchor) — what the model sees initially
+    - Step 2: view generated after step 1's action — what the model sees at step 2
+    - Step N: view generated after step N-1's action
+    - GT View: ground truth image (rightmost)
+    """
+    # Resolve input image
+    input_pil = None
+    if isinstance(input_images, (Image.Image, str)):
+        input_pil = _to_pil_image(input_images)
+    elif isinstance(input_images, list) and input_images:
+        input_pil = _to_pil_image(input_images[0])
+
+    # Determine thumbnail size from first available image
+    first_img = input_pil
+    if first_img is None and trajectory_steps:
+        first_img = _to_pil_image(trajectory_steps[0].get("view_image"))
+    if first_img is None:
+        first_img = Image.new("RGB", (320, 240), (230, 230, 230))
+
+    base_w, base_h = first_img.size
+    thumb_w = max(220, min(360, base_w))
+    thumb_h = max(160, min(280, base_h))
+
+    # Build columns: shift images so each step shows the observation the model sees
+    # Step 1 image = input (anchor), Step 2 image = step 1's generated view, etc.
+    columns: List[dict[str, Any]] = []
+    steps = trajectory_steps or []
+
+    for idx, step in enumerate(steps, start=1):
+        status = "move"
+        if step.get("is_stop"):
+            status = "stop"
+        elif step.get("is_unknown"):
+            status = "unknown"
+
+        action_text = str(step.get("action_text") or "N/A")
+        thinking_text = str(step.get("thinking") or "N/A")
+        termination_reason = step.get("termination_reason")
+
+        summary = (
+            f"status: {status}\n"
+            f"action: {action_text}\n"
+            f"thinking: {thinking_text}"
+        )
+        if termination_reason:
+            summary += f"\ntermination: {termination_reason}"
+
+        # Shifted image assignment:
+        #   Step 1 → input image (anchor)
+        #   Step N → step N-1's generated view_image
+        if idx == 1:
+            step_image = input_pil
+        else:
+            prev_step = steps[idx - 2]  # 0-indexed: step N maps to steps[N-2]
+            step_image = prev_step.get("view_image")
+
+        columns.append(
+            {
+                "title": f"Step {idx}",
+                "image": step_image,
+                "text": summary,
+            }
+        )
+
+    # If the last step generated a view, add it as the final observation column
+    if steps and steps[-1].get("view_image") and not steps[-1].get("is_stop"):
+        columns.append(
+            {
+                "title": f"Final View",
+                "image": steps[-1].get("view_image"),
+                "text": "Last generated observation.",
+            }
+        )
+
+    # Add GT image as rightmost column
+    gt_pil = _to_pil_image(gt_image)
+    if gt_pil is not None:
+        columns.append(
+            {
+                "title": "GT View",
+                "image": gt_pil,
+                "text": f"Ground truth answer: {gt_answer or 'N/A'}",
+            }
+        )
+
+    pad = 20
+    gap = 12
+    title_h = 24
+    canvas_w = pad * 2 + len(columns) * thumb_w + max(0, len(columns) - 1) * gap
+
+    try:
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
+    except Exception:
+        font_title = ImageFont.load_default()
+        font_body = ImageFont.load_default()
+
+    reward_text = (
+        f"{float(verifier_reward):.3f}" if isinstance(verifier_reward, (int, float)) else "N/A"
+    )
+    header_parts = [
+        f"Question: {vqa_question}",
+        f"GT answer: {gt_answer or 'N/A'}",
+        f"Verifier answer: {verifier_answer or 'N/A'}",
+        f"Verifier reward: {reward_text}"
+    ]
+    if turn_type or target_visibility:
+        meta = []
+        if turn_type: meta.append(f"Turn: {turn_type}")
+        if target_visibility: meta.append(f"Visibility: {target_visibility}")
+        header_parts.insert(1, " | ".join(meta))
+    
+    header = "\n".join(header_parts)
+    header_wrap = _safe_wrap(header, width=max(60, int((canvas_w - 2 * pad) / 9)))
+
+    tmp = Image.new("RGB", (10, 10), "white")
+    tmp_draw = ImageDraw.Draw(tmp)
+    header_bbox = tmp_draw.multiline_textbbox((0, 0), header_wrap, font=font_title, spacing=4)
+    header_h = (header_bbox[3] - header_bbox[1]) + 10
+
+    line_h = max(14, font_body.getbbox("Ag")[3] - font_body.getbbox("Ag")[1] + 2)
+    max_lines = 1
+    for col in columns:
+        wrapped = _safe_wrap(col["text"], width=42)
+        col["wrapped_text"] = wrapped
+        line_count = len(wrapped.splitlines()) if wrapped else 1
+        max_lines = max(max_lines, line_count)
+    text_h = max(90, max_lines * line_h + 16)
+
+    canvas_h = pad + header_h + 10 + title_h + thumb_h + 8 + text_h + pad
+    canvas = Image.new("RGB", (canvas_w, canvas_h), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    draw.multiline_text((pad, pad), header_wrap, fill=(0, 0, 0), font=font_title, spacing=4)
+    draw.line([(pad, pad + header_h), (canvas_w - pad, pad + header_h)], fill=(220, 220, 220), width=2)
+
+    y_top = pad + header_h + 10
+    for idx, col in enumerate(columns):
+        x = pad + idx * (thumb_w + gap)
+
+        draw.text((x, y_top), col["title"], fill=(0, 0, 0), font=font_title)
+
+        panel = Image.new("RGB", (thumb_w, thumb_h), (245, 245, 245))
+        source_img = _to_pil_image(col.get("image"))
+        if source_img is not None:
+            fitted = ImageOps.contain(
+                source_img,
+                (thumb_w - 8, thumb_h - 8),
+                method=Image.Resampling.LANCZOS,
+            )
+            px = (thumb_w - fitted.width) // 2
+            py = (thumb_h - fitted.height) // 2
+            panel.paste(fitted, (px, py))
+
+        img_y = y_top + title_h
+        canvas.paste(panel, (x, img_y))
+        draw.rectangle((x, img_y, x + thumb_w - 1, img_y + thumb_h - 1), outline=(200, 200, 200), width=1)
+
+        draw.multiline_text(
+            (x, img_y + thumb_h + 8),
+            col["wrapped_text"],
+            fill=(35, 35, 35),
+            font=font_body,
+            spacing=2,
+        )
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    canvas.save(output_path)

@@ -95,6 +95,8 @@ class Qwen2VLModule(VLMBaseModule):
         # FIXME
         # This could only process pure-multimodal or pure-text inputs
         additional_output = None
+        # Qwen processors mutate `text` in-place when expanding image tokens; avoid side effects.
+        text_inputs = list(prompts_text) if isinstance(prompts_text, list) else prompts_text
         # Optional resizing prior to processor: use processor hints first, then env vars
         def _fixed_size_from_hints():
             rw = rh = None
@@ -145,7 +147,7 @@ class Qwen2VLModule(VLMBaseModule):
         if len(images) > 0:
             images = _resize_structure(images)
             prompt_inputs = processing_class(
-                text=prompts_text,
+                text=text_inputs,
                 images=images,
                 return_tensors=return_tensors,
                 padding=padding,
@@ -154,7 +156,7 @@ class Qwen2VLModule(VLMBaseModule):
             additional_output = [{'image_grid_thw': image_grid_thw} for image_grid_thw in prompt_inputs['image_grid_thw']]    
         else:
             prompt_inputs = processing_class(
-                text=prompts_text,
+                text=text_inputs,
                 return_tensors=return_tensors,
                 padding=padding,
                 padding_side=padding_side,
