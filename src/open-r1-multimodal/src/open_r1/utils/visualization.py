@@ -225,6 +225,10 @@ def create_multistep_rollout_visualization(
     target_visibility: Optional[str] = None,
     turn_type: Optional[str] = None,
     gt_image: Image.Image | str | None = None,
+    target_object_id: Optional[str] = None,
+    gt_object_pixels: Optional[int] = None,
+    gen_object_pixels: Optional[int] = None,
+    computed_visibility: Optional[float] = None,
 ):
     """Create a single-image summary of a multistep rollout trajectory.
     
@@ -295,22 +299,28 @@ def create_multistep_rollout_visualization(
 
     # If the last step generated a view, add it as the final observation column
     if steps and steps[-1].get("view_image") and not steps[-1].get("is_stop"):
+        extra = "Last generated observation."
+        if gen_object_pixels is not None:
+            extra += f"\nTarget pixels (gen): {gen_object_pixels}"
         columns.append(
             {
                 "title": f"Final View",
                 "image": steps[-1].get("view_image"),
-                "text": "Last generated observation.",
+                "text": extra,
             }
         )
 
     # Add GT image as rightmost column
     gt_pil = _to_pil_image(gt_image)
     if gt_pil is not None:
+        gt_text = f"Ground truth answer: {gt_answer or 'N/A'}"
+        if gt_object_pixels is not None:
+            gt_text += f"\nTarget pixels (gt): {gt_object_pixels}"
         columns.append(
             {
                 "title": "GT View",
                 "image": gt_pil,
-                "text": f"Ground truth answer: {gt_answer or 'N/A'}",
+                "text": gt_text,
             }
         )
 
@@ -340,6 +350,15 @@ def create_multistep_rollout_visualization(
         if turn_type: meta.append(f"Turn: {turn_type}")
         if target_visibility: meta.append(f"Visibility: {target_visibility}")
         header_parts.insert(1, " | ".join(meta))
+
+    if target_object_id:
+        header_parts.append(f"Target object: {target_object_id}")
+    if gt_object_pixels is not None or gen_object_pixels is not None:
+        gt_txt = str(gt_object_pixels) if gt_object_pixels is not None else "N/A"
+        gen_txt = str(gen_object_pixels) if gen_object_pixels is not None else "N/A"
+        header_parts.append(f"Target pixels (gen/gt): {gen_txt}/{gt_txt}")
+    if computed_visibility is not None:
+        header_parts.append(f"Computed visibility min(1, gen/gt): {computed_visibility:.4f}")
     
     header = "\n".join(header_parts)
     header_wrap = _safe_wrap(header, width=max(60, int((canvas_w - 2 * pad) / 9)))

@@ -173,7 +173,6 @@ cython_debug/
 .pypirc
 
 # Temp folders
-data/
 wandb/
 scripts/
 checkpoints/

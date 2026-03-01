@@ -5,7 +5,7 @@ import logging
 import os
 import time
 import traceback
-from typing import Any, Dict, Optional, Callable, Tuple
+from typing import Any, Dict, Optional, Callable, Tuple, List
 
 import numpy as np
 import torch
@@ -29,6 +29,43 @@ class ControllerFailureError(Exception):
 
 _PROC_CONTROLLER: Optional[Controller] = None
 _PROC_DATASET = None  # Cache ProcTHOR dataset
+_CUSTOM_HOUSE_CACHE: Dict[str, Any] = {}
+_CUSTOM_HOUSE_CACHE_MTIME: Dict[str, float] = {}
+_LAST_LOADED_SCENE_SIG: Optional[tuple] = None
+
+
+def _custom_house_key(custom_house_path: Any, split: str) -> str:
+    """Best-effort stable key for custom house source (for scene caching)."""
+    if custom_house_path is None:
+        return "none"
+    if isinstance(custom_house_path, str):
+        return custom_house_path
+    if isinstance(custom_house_path, dict):
+        # common: {"train": "..."} or {"path": "..."}
+        if split in custom_house_path and isinstance(custom_house_path[split], str):
+            return str(custom_house_path[split])
+        if "path" in custom_house_path and isinstance(custom_house_path["path"], str):
+            return str(custom_house_path["path"])
+        return f"dict:{sorted(list(custom_house_path.keys()))}"
+    return f"obj:{type(custom_house_path).__name__}:{id(custom_house_path)}"
+
+
+def _scene_signature(
+    *,
+    scene_index: Any,
+    split: str,
+    custom_house_path: Any,
+    data_type: Any,
+    house_id: Any,
+) -> tuple:
+    """Signature used to avoid re-loading the same scene repeatedly."""
+    return (
+        split,
+        int(scene_index) if scene_index is not None else None,
+        str(data_type) if data_type is not None else None,
+        str(house_id) if house_id is not None else None,
+        _custom_house_key(custom_house_path, split),
+    )
 
 DEBUG_MODE = str(os.getenv("DEBUG_MODE", "0")) == "1"
 
@@ -164,33 +201,121 @@ def get_procthor_dataset(custom_house_path: Optional[Dict[str, Any]] = None, spl
     """Load and cache ProcTHOR-10k dataset."""
     global _PROC_DATASET
     if _PROC_DATASET is None:
-        if custom_house_path is not None:
-            _PROC_DATASET = {}  # Initialize as dict first
-            # for split in ["train", "val", "test"]:
-            if DEBUG_MODE and _get_local_rank() == 0:
-                print(
-                    f"[procthor] Loading custom house path for {split}: {custom_house_path}"
-                )
-            _PROC_DATASET[split] = []
-            house_path = custom_house_path#[split]
-            if not house_path or not os.path.exists(house_path):
-                if DEBUG_MODE and _get_local_rank() == 0:
-                    print(f"No custom house path for {split}")
-            with gzip.open(house_path, "rt", encoding="utf-8") as f:
-                for line in f:
-                    json_line = json.loads(line)
-                    _PROC_DATASET[split].append(json_line)
-            return _PROC_DATASET
-        else:
+        if custom_house_path is None:
             print("[procthor] Loading ProcTHOR-10k dataset...")
             _PROC_DATASET = prior.load_dataset("procthor-10k")
-        print(f"[procthor] Dataset loaded: {len(_PROC_DATASET[split])} houses")
-    return _PROC_DATASET
+            print(f"[procthor] Dataset loaded: {len(_PROC_DATASET[split])} houses")
+            return _PROC_DATASET
+
+    if custom_house_path is None:
+        return _PROC_DATASET
+
+    # Custom house path mode (evaluation): supports both legacy .gz (jsonl list)
+    # and new .json (dict keyed by data_type -> house_id -> house).
+    house_path: Optional[str] = None
+    if isinstance(custom_house_path, str):
+        house_path = custom_house_path
+    elif isinstance(custom_house_path, dict):
+        # Legacy callers sometimes pass {"train": "...", "val": "..."}.
+        if split in custom_house_path and isinstance(custom_house_path[split], str):
+            house_path = custom_house_path[split]
+        elif "path" in custom_house_path and isinstance(custom_house_path["path"], str):
+            house_path = custom_house_path["path"]
+    if house_path is None:
+        # If a caller passes already-loaded houses, just return it.
+        return custom_house_path
+
+    if not os.path.exists(house_path):
+        raise FileNotFoundError(f"Custom house path not found: {house_path}")
+
+    mtime = float(os.path.getmtime(house_path))
+    cached = _CUSTOM_HOUSE_CACHE.get(house_path)
+    if cached is not None and _CUSTOM_HOUSE_CACHE_MTIME.get(house_path) == mtime:
+        return cached
+
+    if DEBUG_MODE and _get_local_rank() == 0:
+        print(f"[procthor] Loading custom houses from: {house_path}")
+
+    loaded: Any
+    if house_path.endswith(".gz"):
+        # Legacy format: gzip-compressed jsonl of houses (list)
+        houses: List[Any] = []
+        with gzip.open(house_path, "rt", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                houses.append(json.loads(line))
+        loaded = houses
+    else:
+        # New format: JSON file (dict). Expected: data[data_type][house_id] -> house
+        with open(house_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+
+    _CUSTOM_HOUSE_CACHE[house_path] = loaded
+    _CUSTOM_HOUSE_CACHE_MTIME[house_path] = mtime
+    return loaded
 
 
-def get_procthor_house(custom_house_path: Dict[str, Any], house_index: int, split: str = "train"):
-    """Get ProcTHOR house object by index."""
+def get_procthor_house(
+    custom_house_path: Any,
+    house_index: int,
+    split: str = "train",
+    *,
+    data_type: Optional[str] = None,
+    house_id: Optional[Any] = None,
+):
+    """Get ProcTHOR house object.
+
+    - Default dataset: index into prior dataset split.
+    - Legacy custom: list of houses (gzip jsonl), indexed by house_index.
+    - New custom: JSON dict keyed by data_type -> house_id -> house.
+    """
     dataset = get_procthor_dataset(custom_house_path=custom_house_path, split=split)
+
+    # New custom format: dict keyed by data_type and house_id
+    if isinstance(dataset, dict) and data_type is not None and house_id is not None:
+        dt_blob = dataset.get(data_type)
+        if dt_blob is None and isinstance(data_type, str):
+            dt_blob = dataset.get(data_type.lower()) or dataset.get(data_type.upper())
+
+        # Counting custom house json: data[data_type] is a list aligned with house_index.
+        if isinstance(dt_blob, list):
+            if house_index < 0 or house_index >= len(dt_blob):
+                print(
+                    f"[procthor] Warning: house_index {house_index} out of range for data_type={data_type}, using 0"
+                )
+                house_index = 0
+            return dt_blob[house_index]
+
+        if not isinstance(dt_blob, dict):
+            raise KeyError(
+                f"Custom house json missing data_type={data_type} mapping (found type={type(dt_blob).__name__})"
+            )
+
+        # Try several house_id key forms
+        candidates = [house_id]
+        if isinstance(house_id, str):
+            candidates.append(house_id.strip())
+        else:
+            candidates.append(str(house_id))
+        # Common: scene_id like "house_00002"
+        if isinstance(house_id, str) and house_id.startswith("house_"):
+            candidates.append(house_id.replace("house_", ""))
+
+        for k in candidates:
+            if k in dt_blob:
+                return dt_blob[k]
+        raise KeyError(f"Custom house json missing house_id={house_id} under data_type={data_type}")
+
+    # Legacy custom format: list of houses (gzip jsonl)
+    if isinstance(dataset, list):
+        if house_index < 0 or house_index >= len(dataset):
+            print(f"[procthor] Warning: house_index {house_index} out of range, using 0")
+            house_index = 0
+        return dataset[house_index]
+
+    # Prior dataset format: dataset[split] is list-like
     if house_index < 0 or house_index >= len(dataset[split]):
         print(f"[procthor] Warning: house_index {house_index} out of range, using 0")
         house_index = 0
@@ -424,6 +549,8 @@ def build_additional_view(
     current_position = render_metadata.get("position")
     current_rotation = render_metadata.get("rotation")
     split = render_metadata.get("data_split", "train")
+    data_type = render_metadata.get("data_type")
+    house_id = render_metadata.get("house_id")
     trans_scale = float(
         render_metadata.get("trans_scale", 100.0)
     )  # default: 100 (cm to meters conversion)
@@ -446,19 +573,41 @@ def build_additional_view(
 
     # Reset/ensure scene is active
     last_event = None
+    global _LAST_LOADED_SCENE_SIG
     if scene_index is not None:
-        house = get_procthor_house(
-            custom_house_path=custom_house_path, house_index=scene_index, split=split
+        desired_sig = _scene_signature(
+            scene_index=scene_index,
+            split=split,
+            custom_house_path=custom_house_path,
+            data_type=data_type,
+            house_id=house_id,
         )
-        success = _safe_controller_reset(controller, scene=house)
-        if not success:
-            print(f"[procthor] Failed to reset controller with scene_index={scene_index}")
-            return None, {"last_event": None, "error": "Failed to reset controller", "scene_index": scene_index}
+        force_reset = bool(render_metadata.get("force_scene_reset", False))
+        needs_reset = force_reset or (_LAST_LOADED_SCENE_SIG != desired_sig)
+
+        if needs_reset:
+            house = get_procthor_house(
+                custom_house_path=custom_house_path,
+                house_index=scene_index,
+                split=split,
+                data_type=data_type,
+                house_id=house_id,
+            )
+            success = _safe_controller_reset(controller, scene=house)
+            if not success:
+                print(f"[procthor] Failed to reset controller with scene_index={scene_index}")
+                return None, {
+                    "last_event": None,
+                    "error": "Failed to reset controller",
+                    "scene_index": scene_index,
+                }
+            _LAST_LOADED_SCENE_SIG = desired_sig
 
     if render_metadata.get("state", None):
         set_physical_state(controller, render_metadata)
 
-    if custom_house_path:
+    # Stabilize only when we (re)load a custom scene, not on every view render.
+    if scene_index is not None and custom_house_path and (needs_reset if "needs_reset" in locals() else True):
         print(f"[procthor] tick 5 seconds to stabilize the scene ...")
         for _ in range(100):
             controller.step(action="AdvancePhysicsStep", timeStep=0.05)
@@ -612,6 +761,48 @@ def build_additional_view(
         "target_position": target_pos,
         "actual_position": final_pos,
     }
+    # Optional: count pixels using instance segmentation.
+    # - pixel_count_object_id: one instance id
+    # - pixel_count_object_type: sum over all instances matching objectType
+    pixel_count_object_id = render_metadata.get("pixel_count_object_id")
+    pixel_count_object_type = render_metadata.get("pixel_count_object_type")
+    if pixel_count_object_id or pixel_count_object_type:
+        pixel_count = None
+        try:
+            masks = getattr(event, "instance_masks", None)
+            if not masks:
+                pixel_count = 0
+            elif pixel_count_object_id:
+                if pixel_count_object_id in masks and masks[pixel_count_object_id] is not None:
+                    pixel_count = int(np.sum(masks[pixel_count_object_id]))
+                else:
+                    pixel_count = 0
+            else:
+                # Sum pixels for all instances of a given objectType
+                target_type = str(pixel_count_object_type).strip().lower()
+                objects = (event.metadata or {}).get("objects", [])
+                matching_ids = [
+                    o.get("objectId")
+                    for o in objects
+                    if str(o.get("objectType", "")).strip().lower() == target_type and o.get("objectId") is not None
+                ]
+                total = 0
+                for oid in matching_ids:
+                    m = masks.get(oid)
+                    if m is None:
+                        continue
+                    total += int(np.sum(m))
+                pixel_count = int(total)
+                result_metadata["pixel_count_object_ids"] = matching_ids
+        except Exception:
+            pixel_count = None
+        if pixel_count_object_id:
+            result_metadata["pixel_count_object_id"] = pixel_count_object_id
+            result_metadata["pixel_count_mode"] = "object_id"
+        if pixel_count_object_type:
+            result_metadata["pixel_count_object_type"] = pixel_count_object_type
+            result_metadata["pixel_count_mode"] = "object_type"
+        result_metadata["pixel_count"] = pixel_count
     return Image.fromarray(frame), result_metadata
 
 

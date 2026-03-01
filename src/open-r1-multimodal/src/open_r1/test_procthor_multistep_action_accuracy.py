@@ -66,7 +66,7 @@ def main():
         "--verifier_model", default="qwen2.5vl:7b", help="Verifier model path or alias"
     )
     parser.add_argument(
-        "--max_rollout_steps", type=int, default=3, help="Max steps for multi-step agent"
+        "--max_rollout_steps", type=int, default=4, help="Max steps for multi-step agent"
     )
     parser.add_argument(
         "--max_new_tokens", type=int, default=512, help="Max tokens for student model"
@@ -423,6 +423,10 @@ def main():
             "custom_house_path": args.custom_house_path,
             "scene_path": scene_path,
         }
+        # Custom house selection for counting (new format: data[data_type][house_id])
+        if item.get("question_type") == "counting":
+            render_metadata["data_type"] = item.get("data_type")
+            render_metadata["house_id"] = item.get("house_id", item.get("scene_id"))
 
         if item.get("state", None):
             render_metadata["state"] = item["state"]
@@ -437,6 +441,10 @@ def main():
             thinking_process = "N/A"
             actions_text = "N/A"
             student_output = "N/A"
+            # Always initialize these so downstream saving/visualization works in all modes.
+            # In verifier-only modes we won't append additional views/steps.
+            current_images = [input_img]
+            rollout_steps = []
 
             if args.input_view_for_verifier:
                 # Input view for verifier mode: Skip action prediction, use input view directly
@@ -470,6 +478,8 @@ def main():
                 thinking_process = "N/A (gt_view_for_verifier mode)"
                 actions_text = "N/A (gt_view_for_verifier mode)"
                 student_output = "N/A (gt_view_for_verifier mode)"
+                # The verifier observes the GT view in this mode.
+                current_images = [gt_img]
 
                 print(f"Using gt_action: {gt_actions}")
 
@@ -530,177 +540,262 @@ def main():
                 gen_img = None
                 
                 rollout_steps = []
+
+            # Visibility via pixel count (gt pose vs generated final view)
+            target_object_id = item.get("target_object_id")
+            counting_object_type = item.get("counting_object") if item.get("question_type") == "counting" else None
+            gt_object_pixels = None
+            gen_object_pixels = None
+            computed_visibility = None
+            do_rollout = (not args.input_view_for_verifier) and (not args.gt_view_for_verifier)
+
+            # Compute GT pixel count at the last-step pose (steps[-1] position/rotation)
+            if controller is not None and (target_object_id or counting_object_type):
+                try:
+                    gt_render_metadata = dict(render_metadata)
+                    gt_render_metadata["position"] = gt_position
+                    gt_render_metadata["rotation"] = gt_rotation
+                    if counting_object_type:
+                        gt_render_metadata["pixel_count_object_type"] = counting_object_type
+                        gt_render_metadata.pop("pixel_count_object_id", None)
+                    else:
+                        gt_render_metadata["pixel_count_object_id"] = target_object_id
+                        gt_render_metadata.pop("pixel_count_object_type", None)
+                    _, gt_meta = build_additional_view(controller, [0, 0, 0], gt_render_metadata)
+                    if isinstance(gt_meta, dict):
+                        gt_object_pixels = gt_meta.get("pixel_count")
+                except Exception:
+                    gt_object_pixels = None
                 
-                for step in range(args.max_rollout_steps):
-                    print(f"--- Rollout Step {step+1}/{args.max_rollout_steps} ---")
-                    
-                    if use_gemini_action or use_gpt_action:
-                        api_messages = []
-                        image_turn_idx = 0
-                        for turn in chat:
-                            role = turn.get("role")
-                            if role == "assistant":
-                                assistant_texts = []
+                # Only run rollout/action prediction in action mode.
+                if do_rollout:
+                    for step in range(args.max_rollout_steps):
+                        print(f"--- Rollout Step {step+1}/{args.max_rollout_steps} ---")
+                        
+                        if use_gemini_action or use_gpt_action:
+                            api_messages = []
+                            image_turn_idx = 0
+                            for turn in chat:
+                                role = turn.get("role")
+                                if role == "assistant":
+                                    assistant_texts = []
+                                    for c in turn.get("content", []):
+                                        if c.get("type") == "text" and c.get("text"):
+                                            assistant_texts.append(str(c.get("text")))
+                                    if assistant_texts:
+                                        api_messages.append(
+                                            {"role": "assistant", "text": "\n".join(assistant_texts)}
+                                        )
+                                    continue
+    
+                                if role != "user":
+                                    continue
+    
+                                user_texts = []
+                                has_image = False
                                 for c in turn.get("content", []):
                                     if c.get("type") == "text" and c.get("text"):
-                                        assistant_texts.append(str(c.get("text")))
-                                if assistant_texts:
-                                    api_messages.append(
-                                        {"role": "assistant", "text": "\n".join(assistant_texts)}
-                                    )
-                                continue
-
-                            if role != "user":
-                                continue
-
-                            user_texts = []
-                            has_image = False
-                            for c in turn.get("content", []):
-                                if c.get("type") == "text" and c.get("text"):
-                                    user_texts.append(str(c.get("text")))
-                                elif c.get("type") == "image":
-                                    has_image = True
-
-                            user_message = {"role": "user"}
-                            if user_texts:
-                                user_message["text"] = "\n".join(user_texts)
-                            if has_image and image_turn_idx < len(current_images):
-                                user_message["image"] = current_images[image_turn_idx]
-                                image_turn_idx += 1
-                            if "text" in user_message or "image" in user_message:
-                                api_messages.append(user_message)
-
-                        if use_gemini_action:
-                            print(
-                                f"[Gemini Action] Calling Gemini API with model {gemini_action_model_id}..."
-                            )
-                            step_output = run_gemini_action_prediction(
-                                image=None,
-                                prompt=None,
-                                model_id=gemini_action_model_id,
-                                messages=api_messages,
-                            )
+                                        user_texts.append(str(c.get("text")))
+                                    elif c.get("type") == "image":
+                                        has_image = True
+    
+                                user_message = {"role": "user"}
+                                if user_texts:
+                                    user_message["text"] = "\n".join(user_texts)
+                                if has_image and image_turn_idx < len(current_images):
+                                    user_message["image"] = current_images[image_turn_idx]
+                                    image_turn_idx += 1
+                                if "text" in user_message or "image" in user_message:
+                                    api_messages.append(user_message)
+    
+                            if use_gemini_action:
+                                print(
+                                    f"[Gemini Action] Calling Gemini API with model {gemini_action_model_id}..."
+                                )
+                                step_output = run_gemini_action_prediction(
+                                    image=None,
+                                    prompt=None,
+                                    model_id=gemini_action_model_id,
+                                    messages=api_messages,
+                                )
+                            else:
+                                print(
+                                    f"[GPT Action] Calling GPT API with model {gpt_action_model_id}..."
+                                )
+                                step_output = run_gpt_action_prediction(
+                                    image=None,
+                                    prompt=None,
+                                    model_id=gpt_action_model_id,
+                                    messages=api_messages,
+                                )
+    
+                            if step_output.startswith("ERROR:"):
+                                print(f"Action prediction failed: {step_output}")
+                                break
                         else:
-                            print(
-                                f"[GPT Action] Calling GPT API with model {gpt_action_model_id}..."
+                            chat_text = student_processor.apply_chat_template(
+                                chat, tokenize=False, add_generation_prompt=True
                             )
-                            step_output = run_gpt_action_prediction(
-                                image=None,
-                                prompt=None,
-                                model_id=gpt_action_model_id,
-                                messages=api_messages,
+                            
+                            inputs = student_processor(
+                                text=[chat_text],
+                                images=current_images,
+                                return_tensors="pt",
+                                padding=True,
+                                truncation=True,
+                                max_length=4096,
                             )
-
-                        if step_output.startswith("ERROR:"):
-                            print(f"Action prediction failed: {step_output}")
-                            break
-                    else:
-                        chat_text = student_processor.apply_chat_template(
-                            chat, tokenize=False, add_generation_prompt=True
-                        )
+                            inputs = {
+                                k: v.to(args.device) if isinstance(v, torch.Tensor) else v
+                                for k, v in inputs.items()
+                            }
+                            
+                            student_model.eval()
+                            if hasattr(student_model, "reset_cache"):
+                                student_model.reset_cache()
+                                
+                            gen = student_model.generate(
+                                **inputs,
+                                max_new_tokens=args.max_new_tokens,
+                                do_sample=False,
+                                pad_token_id=student_processor.tokenizer.eos_token_id,
+                                use_cache=True,
+                                output_attentions=False,
+                                output_hidden_states=False,
+                                return_dict_in_generate=False,
+                            )
+                            
+                            prompt_length = inputs["input_ids"].size(1)
+                            # For AutoModel generation we might get full sequence back
+                            # if the model is Qwen2VL
+                            if isinstance(student_model, Qwen2_5_VLForConditionalGeneration):
+                                completion_ids = gen[:, prompt_length:]
+                            else:
+                                completion_ids = gen
+                                
+                            try:
+                                step_output = student_processor.batch_decode(
+                                    completion_ids, skip_special_tokens=True
+                                )[0]
+                            except:
+                                step_output = student_processor.batch_decode(
+                                    gen, skip_special_tokens=True
+                                )[0]
+                            
+                        print(f"Step {step+1} Output:\\n{step_output}\\n")
+                        student_output = step_output if step_output else student_output
                         
-                        inputs = student_processor(
-                            text=[chat_text],
-                            images=current_images,
-                            return_tensors="pt",
-                            padding=True,
-                            truncation=True,
-                            max_length=4096,
-                        )
-                        inputs = {
-                            k: v.to(args.device) if isinstance(v, torch.Tensor) else v
-                            for k, v in inputs.items()
+                        chat.append({"role": "assistant", "content": [{"type": "text", "text": step_output}]})
+                        
+                        parsed = _parse_multistep_output(step_output)
+                        thinking_process = parsed.get("thinking", "")
+                        actions_text = parsed.get("action_text", "")
+                        predicted_actions = parsed.get("action")
+                        
+                        step_record = {
+                            "step_index": step + 1,
+                            "thinking": thinking_process,
+                            "action_text": actions_text or "<invalid>",
+                            "raw_completion": step_output,
+                            "is_stop": parsed.get("is_stop", False),
+                            "is_unknown": parsed.get("is_unknown", False),
+                            "view_image": None
                         }
+                        rollout_steps.append(step_record)
                         
-                        student_model.eval()
-                        if hasattr(student_model, "reset_cache"):
-                            student_model.reset_cache()
+                        if parsed.get("is_stop"):
+                            print("Model emitted <stop>.")
+                            break
+                        
+                        effective_action = predicted_actions
+                        if parsed.get("is_unknown"):
+                            effective_action = [90, 0, 0] # fallback
                             
-                        gen = student_model.generate(
-                            **inputs,
-                            max_new_tokens=args.max_new_tokens,
-                            do_sample=False,
-                            pad_token_id=student_processor.tokenizer.eos_token_id,
-                            use_cache=True,
-                            output_attentions=False,
-                            output_hidden_states=False,
-                            return_dict_in_generate=False,
+                        if effective_action is None:
+                            print("Invalid action. Stopping rollout.")
+                            break
+                            
+                        print(f"Generating view for action {effective_action}...")
+                        # Ask renderer to count pixels (id or type) if available
+                        if counting_object_type:
+                            render_metadata = dict(render_metadata)
+                            render_metadata["pixel_count_object_type"] = counting_object_type
+                            render_metadata.pop("pixel_count_object_id", None)
+                        elif target_object_id:
+                            render_metadata = dict(render_metadata)
+                            render_metadata["pixel_count_object_id"] = target_object_id
+                            render_metadata.pop("pixel_count_object_type", None)
+                        gen_img, result_metadata = build_additional_view(
+                            controller, effective_action, render_metadata
                         )
                         
-                        prompt_length = inputs["input_ids"].size(1)
-                        # For AutoModel generation we might get full sequence back
-                        # if the model is Qwen2VL
-                        if isinstance(student_model, Qwen2_5_VLForConditionalGeneration):
-                            completion_ids = gen[:, prompt_length:]
+                        if gen_img:
+                            print("✓ View generated")
+                            step_record["view_image"] = gen_img
+                            if isinstance(result_metadata, dict) and "pixel_count" in result_metadata:
+                                # Keep legacy key for visualization while also storing counting-specific key.
+                                step_record["target_object_pixel_count"] = result_metadata.get("pixel_count")
+                                if counting_object_type:
+                                    step_record["counting_object_type"] = counting_object_type
+                                    step_record["counting_object_pixel_count"] = result_metadata.get("pixel_count")
+                                gen_object_pixels = result_metadata.get("pixel_count")
+                            current_images.append(process_img(gen_img))
+                            chat.append({"role": "user", "content": [{"type": "image", "text": None}]})
+                            
+                            if result_metadata and result_metadata.get("actual_position"):
+                                actual_pos = result_metadata["actual_position"]
+                                rot1, rot2 = effective_action[0], effective_action[2]
+                                rot1_norm = rot1 if rot1 >= 0 else rot1 + 360
+                                rot2_norm = rot2 if rot2 >= 0 else rot2 + 360
+                                new_yaw = (render_metadata["rotation"].get("y", 0) + rot1_norm + rot2_norm) % 360
+                                
+                                render_metadata = dict(render_metadata)
+                                render_metadata["position"] = actual_pos
+                                render_metadata["rotation"] = {"x": 0.0, "y": new_yaw, "z": 0.0}
                         else:
-                            completion_ids = gen
-                            
-                        try:
-                            step_output = student_processor.batch_decode(
-                                completion_ids, skip_special_tokens=True
-                            )[0]
-                        except:
-                            step_output = student_processor.batch_decode(
-                                gen, skip_special_tokens=True
-                            )[0]
-                        
-                    print(f"Step {step+1} Output:\\n{step_output}\\n")
-                    student_output = step_output if step_output else student_output
-                    
-                    chat.append({"role": "assistant", "content": [{"type": "text", "text": step_output}]})
-                    
-                    parsed = _parse_multistep_output(step_output)
-                    thinking_process = parsed.get("thinking", "")
-                    actions_text = parsed.get("action_text", "")
-                    predicted_actions = parsed.get("action")
-                    
-                    step_record = {
-                        "step_index": step + 1,
-                        "thinking": thinking_process,
-                        "action_text": actions_text or "<invalid>",
-                        "raw_completion": step_output,
-                        "is_stop": parsed.get("is_stop", False),
-                        "is_unknown": parsed.get("is_unknown", False),
-                        "view_image": None
-                    }
-                    rollout_steps.append(step_record)
-                    
-                    if parsed.get("is_stop"):
-                        print("Model emitted <stop>.")
-                        break
-                    
-                    effective_action = predicted_actions
-                    if parsed.get("is_unknown"):
-                        effective_action = [90, 0, 0] # fallback
-                        
-                    if effective_action is None:
-                        print("Invalid action. Stopping rollout.")
-                        break
-                        
-                    print(f"Generating view for action {effective_action}...")
-                    gen_img, result_metadata = build_additional_view(
-                        controller, effective_action, render_metadata
+                            print("✗ Failed to generate view. Stopping rollout.")
+                            break
+
+                # If the model stops before any view generation, we still want a "generated" pixel
+                # count at the current pose (typically the initial pose). This enables visibility
+                # computation even when the first step is <stop>.
+                if (
+                    do_rollout
+                    and controller is not None
+                    and (target_object_id or counting_object_type)
+                    and gen_object_pixels is None
+                ):
+                    try:
+                        gen_render_metadata = dict(render_metadata)
+                        if counting_object_type:
+                            gen_render_metadata["pixel_count_object_type"] = counting_object_type
+                            gen_render_metadata.pop("pixel_count_object_id", None)
+                        else:
+                            gen_render_metadata["pixel_count_object_id"] = target_object_id
+                            gen_render_metadata.pop("pixel_count_object_type", None)
+
+                        _, gen_meta = build_additional_view(
+                            controller, [0, 0, 0], gen_render_metadata
+                        )
+                        if isinstance(gen_meta, dict):
+                            gen_object_pixels = gen_meta.get("pixel_count", gen_object_pixels)
+                    except Exception:
+                        gen_object_pixels = gen_object_pixels
+
+                # In gt_view_for_verifier mode, the "final view" is the GT view/pose.
+                # So gen pixels should match GT pixels if available.
+                if args.gt_view_for_verifier and gen_object_pixels is None and isinstance(gt_object_pixels, int):
+                    gen_object_pixels = gt_object_pixels
+
+                # Compute visibility ratio (min(1.0, gen/gt)) if pixel counts are available
+                if (
+                    isinstance(gt_object_pixels, int)
+                    and gt_object_pixels > 0
+                    and isinstance(gen_object_pixels, int)
+                ):
+                    computed_visibility = min(
+                        1.0, float(gen_object_pixels) / float(gt_object_pixels)
                     )
-                    
-                    if gen_img:
-                        print("✓ View generated")
-                        step_record["view_image"] = gen_img
-                        current_images.append(process_img(gen_img))
-                        chat.append({"role": "user", "content": [{"type": "image", "text": None}]})
-                        
-                        if result_metadata and result_metadata.get("actual_position"):
-                            actual_pos = result_metadata["actual_position"]
-                            rot1, rot2 = effective_action[0], effective_action[2]
-                            rot1_norm = rot1 if rot1 >= 0 else rot1 + 360
-                            rot2_norm = rot2 if rot2 >= 0 else rot2 + 360
-                            new_yaw = (render_metadata["rotation"].get("y", 0) + rot1_norm + rot2_norm) % 360
-                            
-                            render_metadata = dict(render_metadata)
-                            render_metadata["position"] = actual_pos
-                            render_metadata["rotation"] = {"x": 0.0, "y": new_yaw, "z": 0.0}
-                    else:
-                        print("✗ Failed to generate view. Stopping rollout.")
-                        break
 
                 # Run verifier (use latest generated image if available, else input)
                 final_img = current_images[-1]
@@ -725,11 +820,12 @@ def main():
                 print(f"Verifier Output: {verifier_full_output[:200]}...")
 
             # Check accuracy
-            gt_answer = item.get("mcq_answer", item.get("answer"))
-            if gt_answer is None and item.get("question_type") == "existence":
-                gt_answer = "A" if "yes" in str(item.get("answer", "")).lower() else "B"
+            if item.get("question_type") == "existence":
+                gt_answer = item.get("mcq_answer", item.get("answer"))
+            elif item.get("question_type") in ["counting", "state"]:
+                gt_answer = item.get("answer") 
             else:
-                gt_answer = str(gt_answer)
+                raise ValueError(f"Unknown question type: {item.get('question_type')}")
                 
             is_correct = verifier_answer.strip().lower() == gt_answer.strip().lower()
             print(f"Accuracy: {'✓ CORRECT' if is_correct else '✗ WRONG'}")
@@ -745,8 +841,10 @@ def main():
             # Save thinking process and raw output separately
             thinking_dir = os.path.join(args.output_dir, "thinking_process")
             raw_output_dir = os.path.join(args.output_dir, "raw_output")
+            metadata_dir = os.path.join(args.output_dir, "metadata")
             os.makedirs(thinking_dir, exist_ok=True)
             os.makedirs(raw_output_dir, exist_ok=True)
+            os.makedirs(metadata_dir, exist_ok=True)
             
             thinking_path = os.path.join(thinking_dir, f"sample_{idx:04d}_thinking.txt")
             raw_output_path = os.path.join(raw_output_dir, f"sample_{idx:04d}_raw_output.txt")
@@ -771,11 +869,13 @@ def main():
                 target_visibility=item.get("target_object_visibility_level", "unknown"),
                 turn_type="multi-turn" if len(steps) > 2 else "single-turn",
                 gt_image=gt_img_path,
+                target_object_id=target_object_id,
+                gt_object_pixels=gt_object_pixels,
+                gen_object_pixels=gen_object_pixels,
+                computed_visibility=computed_visibility,
             )
 
-            # Record result
-            results.append(
-                {
+            result =  {
                     "sample_id": idx,
                     "input_image": input_img_path,
                     "num_steps": len(rollout_steps),
@@ -784,8 +884,18 @@ def main():
                     "gt_answer": gt_answer,
                     "correct": is_correct,
                     "has_generated_view": len(current_images) > 1,
+                    "target_object_id": target_object_id,
+                    "target_object_pixels_gt": gt_object_pixels,
+                    "target_object_pixels_gen": gen_object_pixels,
+                    "target_object_visibility_gen_over_gt": computed_visibility,
                 }
-            )
+
+            result_json_path = os.path.join(metadata_dir, f"sample_{idx:04d}.json")
+            with open(result_json_path, "w") as f:
+                json.dump(result, f, indent=4)
+
+            # Record result
+            results.append(result)
 
         except Exception as e:
             print(f"Error processing sample {idx}: {e}")
@@ -796,7 +906,7 @@ def main():
     # Save results JSON
     results_json_path = os.path.join(args.output_dir, "results.json")
     with open(results_json_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results, f, indent=4)
 
     # Calculate summary statistics
     total = len(results)
@@ -832,7 +942,7 @@ def main():
     }
     summary_json_path = os.path.join(args.output_dir, "summary.json")
     with open(summary_json_path, "w") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary, f, indent=4)
 
     # Print summary
     print(f"\n{'='*80}")

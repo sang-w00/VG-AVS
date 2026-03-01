@@ -51,6 +51,28 @@ def _pil_to_jpeg_data_url(pil_image: Image.Image) -> str:
     img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
     return f"data:image/jpeg;base64,{img_base64}"
 
+
+def _pil_to_jpeg_bytes(pil_image: Image.Image) -> bytes:
+    """Return JPEG-encoded bytes for Gemini inline_data."""
+    buffered = io.BytesIO()
+    pil_image.save(buffered, format="JPEG")
+    return buffered.getvalue()
+
+
+def _pil_to_gemini_inline_part(pil_image: Image.Image) -> dict:
+    """Create a Gemini 'parts' entry with inline image bytes.
+
+    The google-genai client expects each part to have oneof 'data' set
+    (e.g., text or inline_data). Passing a raw PIL.Image inside parts can
+    become an empty Part and trigger INVALID_ARGUMENT.
+    """
+    return {
+        "inline_data": {
+            "mime_type": "image/jpeg",
+            "data": _pil_to_jpeg_bytes(pil_image),
+        }
+    }
+
 def _is_gemini_backend(model_str: str) -> bool:
     key = (model_str or "").strip().lower()
     return key.startswith("gemini")
@@ -343,7 +365,8 @@ def run_gemini_action_prediction(
                 parts.append({"text": text_str})
             if msg_image is not None:
                 try:
-                    parts.append(_to_pil_image(msg_image))
+                    pil_img = _to_pil_image(msg_image)
+                    parts.append(_pil_to_gemini_inline_part(pil_img))
                 except Exception as e:
                     _API_STATS["gemini_failed_requests"] += 1
                     _API_STATS["gemini_retry_details"].append(
