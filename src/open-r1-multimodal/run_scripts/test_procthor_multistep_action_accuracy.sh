@@ -5,13 +5,13 @@
 # Change this path to your project root directory
 PROJECT_ROOT=${PROJECT_ROOT:-/home/andy2884/workspace/VG-AVS}
 
-MODEL_PATH=${MODEL_PATH:-${PROJECT_ROOT}/src/open-r1-multimodal/output/sft-multistep-cot-3b-0227-multionly/checkpoint-290}
+MODEL_PATH=${MODEL_PATH:-${PROJECT_ROOT}/src/open-r1-multimodal/output/sft-multistep-cot-3b-0228-20epoch}
 
 IMG_ROOT=${IMG_ROOT:-${PROJECT_ROOT}/data}
 NUM_SAMPLES=${NUM_SAMPLES:--1} # use all samples
 
 # Verifier settings
-#CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-6}
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 VERIFIER_MODEL=${VERIFIER_MODEL:-gemini-2.5-flash}
 VERIFIER_DEVICE=${VERIFIER_DEVICE:-cuda:0}
 GPU_DEVICE=${GPU_DEVICE:-0}

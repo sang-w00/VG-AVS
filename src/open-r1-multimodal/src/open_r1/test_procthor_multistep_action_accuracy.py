@@ -534,58 +534,115 @@ def main():
                 for step in range(args.max_rollout_steps):
                     print(f"--- Rollout Step {step+1}/{args.max_rollout_steps} ---")
                     
-                    if use_gemini_action or use_gpt_action: # TODO: support multi-step with API
-                        print("Multi-step with API not fully supported. Using first step only.")
-                        break # Simplification for API models in this script
-                    
-                    chat_text = student_processor.apply_chat_template(
-                        chat, tokenize=False, add_generation_prompt=True
-                    )
-                    
-                    inputs = student_processor(
-                        text=[chat_text],
-                        images=current_images,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=4096,
-                    )
-                    inputs = {
-                        k: v.to(args.device) if isinstance(v, torch.Tensor) else v
-                        for k, v in inputs.items()
-                    }
-                    
-                    student_model.eval()
-                    if hasattr(student_model, "reset_cache"):
-                        student_model.reset_cache()
-                        
-                    gen = student_model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
-                        do_sample=False,
-                        pad_token_id=student_processor.tokenizer.eos_token_id,
-                        use_cache=True,
-                        output_attentions=False,
-                        output_hidden_states=False,
-                        return_dict_in_generate=False,
-                    )
-                    
-                    prompt_length = inputs["input_ids"].size(1)
-                    # For AutoModel generation we might get full sequence back
-                    # if the model is Qwen2VL
-                    if isinstance(student_model, Qwen2_5_VLForConditionalGeneration):
-                        completion_ids = gen[:, prompt_length:]
+                    if use_gemini_action or use_gpt_action:
+                        api_messages = []
+                        image_turn_idx = 0
+                        for turn in chat:
+                            role = turn.get("role")
+                            if role == "assistant":
+                                assistant_texts = []
+                                for c in turn.get("content", []):
+                                    if c.get("type") == "text" and c.get("text"):
+                                        assistant_texts.append(str(c.get("text")))
+                                if assistant_texts:
+                                    api_messages.append(
+                                        {"role": "assistant", "text": "\n".join(assistant_texts)}
+                                    )
+                                continue
+
+                            if role != "user":
+                                continue
+
+                            user_texts = []
+                            has_image = False
+                            for c in turn.get("content", []):
+                                if c.get("type") == "text" and c.get("text"):
+                                    user_texts.append(str(c.get("text")))
+                                elif c.get("type") == "image":
+                                    has_image = True
+
+                            user_message = {"role": "user"}
+                            if user_texts:
+                                user_message["text"] = "\n".join(user_texts)
+                            if has_image and image_turn_idx < len(current_images):
+                                user_message["image"] = current_images[image_turn_idx]
+                                image_turn_idx += 1
+                            if "text" in user_message or "image" in user_message:
+                                api_messages.append(user_message)
+
+                        if use_gemini_action:
+                            print(
+                                f"[Gemini Action] Calling Gemini API with model {gemini_action_model_id}..."
+                            )
+                            step_output = run_gemini_action_prediction(
+                                image=None,
+                                prompt=None,
+                                model_id=gemini_action_model_id,
+                                messages=api_messages,
+                            )
+                        else:
+                            print(
+                                f"[GPT Action] Calling GPT API with model {gpt_action_model_id}..."
+                            )
+                            step_output = run_gpt_action_prediction(
+                                image=None,
+                                prompt=None,
+                                model_id=gpt_action_model_id,
+                                messages=api_messages,
+                            )
+
+                        if step_output.startswith("ERROR:"):
+                            print(f"Action prediction failed: {step_output}")
+                            break
                     else:
-                        completion_ids = gen
+                        chat_text = student_processor.apply_chat_template(
+                            chat, tokenize=False, add_generation_prompt=True
+                        )
                         
-                    try:
-                        step_output = student_processor.batch_decode(
-                            completion_ids, skip_special_tokens=True
-                        )[0]
-                    except:
-                         step_output = student_processor.batch_decode(
-                            gen, skip_special_tokens=True
-                        )[0]
+                        inputs = student_processor(
+                            text=[chat_text],
+                            images=current_images,
+                            return_tensors="pt",
+                            padding=True,
+                            truncation=True,
+                            max_length=4096,
+                        )
+                        inputs = {
+                            k: v.to(args.device) if isinstance(v, torch.Tensor) else v
+                            for k, v in inputs.items()
+                        }
+                        
+                        student_model.eval()
+                        if hasattr(student_model, "reset_cache"):
+                            student_model.reset_cache()
+                            
+                        gen = student_model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=False,
+                            pad_token_id=student_processor.tokenizer.eos_token_id,
+                            use_cache=True,
+                            output_attentions=False,
+                            output_hidden_states=False,
+                            return_dict_in_generate=False,
+                        )
+                        
+                        prompt_length = inputs["input_ids"].size(1)
+                        # For AutoModel generation we might get full sequence back
+                        # if the model is Qwen2VL
+                        if isinstance(student_model, Qwen2_5_VLForConditionalGeneration):
+                            completion_ids = gen[:, prompt_length:]
+                        else:
+                            completion_ids = gen
+                            
+                        try:
+                            step_output = student_processor.batch_decode(
+                                completion_ids, skip_special_tokens=True
+                            )[0]
+                        except:
+                            step_output = student_processor.batch_decode(
+                                gen, skip_special_tokens=True
+                            )[0]
                         
                     print(f"Step {step+1} Output:\\n{step_output}\\n")
                     student_output = step_output if step_output else student_output

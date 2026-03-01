@@ -36,6 +36,21 @@ _API_STATS = {
     "gemini_retry_details": [],
 }
 
+
+def _to_pil_image(image: Image.Image | str) -> Image.Image:
+    if isinstance(image, str):
+        return Image.open(image).convert("RGB")
+    if isinstance(image, Image.Image):
+        return image.convert("RGB")
+    raise TypeError(f"Invalid image type: {type(image)}")
+
+
+def _pil_to_jpeg_data_url(pil_image: Image.Image) -> str:
+    buffered = io.BytesIO()
+    pil_image.save(buffered, format="JPEG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    return f"data:image/jpeg;base64,{img_base64}"
+
 def _is_gemini_backend(model_str: str) -> bool:
     key = (model_str or "").strip().lower()
     return key.startswith("gemini")
@@ -275,7 +290,12 @@ def run_gemini_verifier(images: List[Image.Image] | List[str], question: str, mo
             sleep_s = sleep_s + 1
 
 
-def run_gemini_action_prediction(image: Image.Image, prompt: str, model_id: str) -> str:
+def run_gemini_action_prediction(
+    image: Image.Image | str | None,
+    prompt: str | None,
+    model_id: str,
+    messages: List[dict] | None = None,
+) -> str:
     """Run action prediction using Google Gemini API.
 
     Uses environment variable GEMINI_API_KEY.
@@ -296,17 +316,63 @@ def run_gemini_action_prediction(image: Image.Image, prompt: str, model_id: str)
 
     client = genai.Client(api_key=api_key)
 
-    # Prepare image input
-    if isinstance(image, str):
-        pil_image = Image.open(image).convert('RGB')
-    elif isinstance(image, Image.Image):
-        pil_image = image.convert('RGB')
-    else:
-        _API_STATS['gemini_failed_requests'] += 1
-        _API_STATS['gemini_retry_details'].append(f"Invalid image type: {type(image)}")
-        return f"ERROR: Invalid image type: {type(image)}"
+    # Prepare inputs (single-turn legacy or native multi-turn messages)
+    if messages is not None:
+        contents = []
+        for idx, msg in enumerate(messages):
+            role = str(msg.get("role", "")).strip().lower()
+            text = msg.get("text")
+            msg_image = msg.get("image")
 
-    contents = [pil_image, prompt]
+            if role in ("assistant", "model"):
+                text_str = "" if text is None else str(text)
+                if text_str.strip():
+                    contents.append({"role": "model", "parts": [{"text": text_str}]})
+                continue
+
+            if role != "user":
+                _API_STATS["gemini_failed_requests"] += 1
+                _API_STATS["gemini_retry_details"].append(
+                    f"Invalid message role at index {idx}: {role}"
+                )
+                return f"ERROR: Invalid message role at index {idx}: {role}"
+
+            parts = []
+            text_str = "" if text is None else str(text)
+            if text_str.strip():
+                parts.append({"text": text_str})
+            if msg_image is not None:
+                try:
+                    parts.append(_to_pil_image(msg_image))
+                except Exception as e:
+                    _API_STATS["gemini_failed_requests"] += 1
+                    _API_STATS["gemini_retry_details"].append(
+                        f"Invalid image in message index {idx}: {e}"
+                    )
+                    return f"ERROR: Invalid image in message index {idx}: {e}"
+            if parts:
+                contents.append({"role": "user", "parts": parts})
+
+        if not contents:
+            _API_STATS["gemini_failed_requests"] += 1
+            _API_STATS["gemini_retry_details"].append("Empty multi-turn messages for Gemini action")
+            return "ERROR: Empty multi-turn messages for Gemini action"
+    else:
+        if image is None:
+            _API_STATS["gemini_failed_requests"] += 1
+            _API_STATS["gemini_retry_details"].append("image is required when messages is None")
+            return "ERROR: image is required when messages is None"
+        if prompt is None:
+            _API_STATS["gemini_failed_requests"] += 1
+            _API_STATS["gemini_retry_details"].append("prompt is required when messages is None")
+            return "ERROR: prompt is required when messages is None"
+        try:
+            pil_image = _to_pil_image(image)
+        except Exception as e:
+            _API_STATS["gemini_failed_requests"] += 1
+            _API_STATS["gemini_retry_details"].append(str(e))
+            return f"ERROR: {e}"
+        contents = [pil_image, prompt]
 
     # Retry until success with exponential backoff (caps at 60s)
     attempt = 1
@@ -327,7 +393,12 @@ def run_gemini_action_prediction(image: Image.Image, prompt: str, model_id: str)
             sleep_s = sleep_s + 1
 
 
-def run_gpt_action_prediction(image: Image.Image, prompt: str, model_id: str) -> str:
+def run_gpt_action_prediction(
+    image: Image.Image | str | None,
+    prompt: str | None,
+    model_id: str,
+    messages: List[dict] | None = None,
+) -> str:
     """Run action prediction using OpenAI GPT API.
 
     Uses environment variable OPENAI_API_KEY.
@@ -348,38 +419,84 @@ def run_gpt_action_prediction(image: Image.Image, prompt: str, model_id: str) ->
 
     client = OpenAI(api_key=api_key)
 
-    # Prepare image input - convert to base64
-    if isinstance(image, str):
-        pil_image = Image.open(image).convert('RGB')
-    elif isinstance(image, Image.Image):
-        pil_image = image.convert('RGB')
-    else:
-        _API_STATS['gemini_failed_requests'] += 1
-        _API_STATS['gemini_retry_details'].append(f"Invalid image type: {type(image)}")
-        return f"ERROR: Invalid image type: {type(image)}"
+    # Prepare input for OpenAI Responses API (single-turn legacy or native multi-turn messages)
+    if messages is not None:
+        responses_input = []
+        for idx, msg in enumerate(messages):
+            role = str(msg.get("role", "")).strip().lower()
+            text = msg.get("text")
+            msg_image = msg.get("image")
 
-    # Convert PIL image to base64
-    buffered = io.BytesIO()
-    pil_image.save(buffered, format="JPEG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-    
-    # Prepare input for OpenAI Responses API (following official example)
-    # Note: text comes before image in the official example
-    responses_input = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": prompt
-                },
-                {
-                    "type": "input_image",
-                    "image_url": f"data:image/jpeg;base64,{img_base64}"
-                }
-            ]
-        }
-    ]
+            if role in ("assistant", "system"):
+                text_str = "" if text is None else str(text)
+                if text_str.strip():
+                    responses_input.append({"role": role, "content": text_str})
+                continue
+
+            if role != "user":
+                _API_STATS["gemini_failed_requests"] += 1
+                _API_STATS["gemini_retry_details"].append(
+                    f"Invalid message role at index {idx}: {role}"
+                )
+                return f"ERROR: Invalid message role at index {idx}: {role}"
+
+            content = []
+            text_str = "" if text is None else str(text)
+            if text_str.strip():
+                content.append({"type": "input_text", "text": text_str})
+            if msg_image is not None:
+                try:
+                    pil_image = _to_pil_image(msg_image)
+                except Exception as e:
+                    _API_STATS["gemini_failed_requests"] += 1
+                    _API_STATS["gemini_retry_details"].append(
+                        f"Invalid image in message index {idx}: {e}"
+                    )
+                    return f"ERROR: Invalid image in message index {idx}: {e}"
+                content.append(
+                    {
+                        "type": "input_image",
+                        "image_url": _pil_to_jpeg_data_url(pil_image),
+                    }
+                )
+            if content:
+                responses_input.append({"role": "user", "content": content})
+
+        if not responses_input:
+            _API_STATS["gemini_failed_requests"] += 1
+            _API_STATS["gemini_retry_details"].append("Empty multi-turn messages for GPT action")
+            return "ERROR: Empty multi-turn messages for GPT action"
+    else:
+        if image is None:
+            _API_STATS["gemini_failed_requests"] += 1
+            _API_STATS["gemini_retry_details"].append("image is required when messages is None")
+            return "ERROR: image is required when messages is None"
+        if prompt is None:
+            _API_STATS["gemini_failed_requests"] += 1
+            _API_STATS["gemini_retry_details"].append("prompt is required when messages is None")
+            return "ERROR: prompt is required when messages is None"
+        try:
+            pil_image = _to_pil_image(image)
+        except Exception as e:
+            _API_STATS["gemini_failed_requests"] += 1
+            _API_STATS["gemini_retry_details"].append(str(e))
+            return f"ERROR: {e}"
+
+        responses_input = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": _pil_to_jpeg_data_url(pil_image),
+                    },
+                ],
+            }
+        ]
 
     # Retry until success with exponential backoff (caps at 60s)
     attempt = 1

@@ -6,12 +6,12 @@ MASTER_PORT=${MASTER_PORT:-12337}
 # ===== dataset ====== #
 PROJECT_ROOT=${PROJECT_ROOT:-/path/to/your/project}
 export PYTHONPATH=${PYTHONPATH:-}:${PROJECT_ROOT}/src/open-r1-multimodal/src
-DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_with_cot.jsonl}
+DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0228.jsonl}
 IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
 cd src/open-r1-multimodal
-RUN_NAME=${RUN_NAME:-sft-multistep-cot-3b-0228-20epoch}
-# MODEL=${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
-MODEL=${MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0227/checkpoint-1470}
+RUN_NAME=${RUN_NAME:-sft-multistep-cot-3b-0228-20epoch-undecidable}
+MODEL=${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
+# MODEL=${MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0228-20epoch-undecidable}
 # Wandb settings
 export WANDB_PROJECT=${WANDB_PROJECT:-vgavs}
 REPORT_TO=${REPORT_TO:-wandb}
@@ -29,7 +29,7 @@ MIN_PIXELS=${MIN_PIXELS:-3136}
 PER_DEVICE_TRAIN_BATCH_SIZE=${PER_DEVICE_TRAIN_BATCH_SIZE:-4}
 GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-1}
 LEARNING_RATE=${LEARNING_RATE:-2.0e-5}
-NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-10}
+NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-20}
 LOGGING_STEPS=${LOGGING_STEPS:-10}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-1}
 # LoRA settings

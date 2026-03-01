@@ -12,8 +12,8 @@ IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
 cd src/open-r1-multimodal
 
 # Configuration
-BASE_MODEL=${BASE_MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0227/checkpoint-1470}
-GRPO_RUN_NAME=${GRPO_RUN_NAME:-grpo-multistep-cot-3b-0227}
+BASE_MODEL=${BASE_MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0228-20epoch-multi-20epoch}
+GRPO_RUN_NAME=${GRPO_RUN_NAME:-grpo-multistep-cot-3b-0228-20epoch-multi-20epoch}
 MAX_ROLLOUT_STEPS=${MAX_ROLLOUT_STEPS:-5}
 SAVE_ROLLOUT_VIS=${SAVE_ROLLOUT_VIS:-true}
 ROLLOUT_VIS_INTERVAL=${ROLLOUT_VIS_INTERVAL:-1}
