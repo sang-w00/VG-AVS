@@ -5,7 +5,7 @@
 # Change this path to your project root directory
 PROJECT_ROOT=${PROJECT_ROOT:-/home/andy2884/workspace/VG-AVS}
 
-MODEL_PATH=${MODEL_PATH:-${PROJECT_ROOT}/src/open-r1-multimodal/output/sft-multistep-cot-3b-0228-20epoch}
+MODEL_PATH=${MODEL_PATH:-${PROJECT_ROOT}/src/open-r1-multimodal/output/sft-multistep-cot-3b-0301-20-20epoch}
 
 IMG_ROOT=${IMG_ROOT:-${PROJECT_ROOT}/data}
 NUM_SAMPLES=${NUM_SAMPLES:--1} # use all samples
@@ -28,7 +28,7 @@ echo "GPU device for rendering: ${GPU_DEVICE}"
 echo ""
 
 # existence
-EXISTENCE_TEST_JSONL=${PROJECT_ROOT}/data/avs_existence_train_final_with_cot_multiturn.jsonl
+EXISTENCE_TEST_JSONL=${PROJECT_ROOT}/data/avs_existence_train_final_0228_multiturn_undecidable.jsonl
 COUNTING_TEST_JSONL=${PROJECT_ROOT}/data/avs_procthor_counting.jsonl
 STATE_TEST_JSONL=${PROJECT_ROOT}/data/avs_procthor_state.jsonl
 

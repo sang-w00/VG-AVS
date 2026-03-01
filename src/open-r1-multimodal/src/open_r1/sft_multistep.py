@@ -98,6 +98,10 @@ class SFTScriptArguments(ScriptArguments):
         default=1e-6,
         metadata={"help": "Learning rate for VLM backbone. If None, uses training_args.learning_rate"},
     )
+    save_final_model: bool = field(
+        default=False,
+        metadata={"help": "Save final model at end even when save_strategy is 'no'."},
+    )
 
 
 @dataclass
@@ -374,7 +378,17 @@ def main(script_args, training_args, model_args):
             thinking_text = f"<think> {thinking} </think>\n"
             visibility_lower = visibility_level.strip().lower() if isinstance(visibility_level, str) else ""
 
-            if visibility_lower == "undecidable":
+            undecidable_unknown = False
+            if visibility_lower == "undecidable" and action is not None:
+                try:
+                    head = int(float(action[0]))
+                    fwd = int(float(action[1]))
+                    view = int(float(action[2]))
+                    undecidable_unknown = (head, fwd, view) == (0, 0, 90)
+                except (TypeError, ValueError, IndexError):
+                    undecidable_unknown = False
+
+            if undecidable_unknown:
                 action_text = "<unknown>"
             elif visibility_lower == "visible":
                 action_text = "<stop>"
@@ -531,7 +545,7 @@ def main(script_args, training_args, model_args):
         trainer.train()
     
     # Save final model
-    if training_args.save_strategy != "no":
+    if training_args.save_strategy != "no" or script_args.save_final_model:
         final_model_path = pathlib.Path(training_args.output_dir)
         trainer.save_model(final_model_path)
         print(f"Final model saved to: {final_model_path}")
