@@ -323,13 +323,16 @@ def build_additional_view(
     if obs is None:
         print(f"[Fallback:] Failed to apply actions")
         return None, {"last_event": None, "error": "Target position is not navigable"}
-    # Convert quaternion to Euler angles (simplified - just extract yaw)
-    # For simplicity, we'll just track the yaw component
-    final_rot = {
-        "x": 0.0,
-        "y": 0.0,  # Would need quat_to_euler conversion
-        "z": 0.0,
-    }
+    # Convert final rotation quaternion to Euler angles for downstream rollout updates.
+    try:
+        euler_deg = quaternion_to_euler_degrees(final_rot_quat)
+        final_rot = {
+            "x": float(euler_deg.get("x", 0.0)),
+            "y": float(euler_deg.get("y", 0.0)),
+            "z": float(euler_deg.get("z", 0.0)),
+        }
+    except Exception:
+        final_rot = {"x": 0.0, "y": float(current_rotation.get("y", 0.0)), "z": 0.0}
 
     curr_x = current_position["x"]
     curr_y = current_position["y"]
@@ -361,6 +364,7 @@ def build_additional_view(
         "used_fallback": False,
         "target_position": None,
         "actual_position": {"x": final_x, "y": final_y, "z": final_z},
+        "actual_rotation": final_rot,
     }
 
 

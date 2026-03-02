@@ -273,14 +273,12 @@ def main():
         for p in verifier_model.parameters():
             p.requires_grad_(False)
 
-    # Initialize AI2-THOR controller (needed for action prediction and gt_action modes)
-    # Initialize AI2-THOR controller (needed for action prediction and gt_action modes)
+    # Initialize AI2-THOR controller.
+    # We also use it to compute pixel-based visibility (instance segmentation masks),
+    # even in verifier-only modes (e.g., input_view_for_verifier).
     controller = None
-    if not args.input_view_for_verifier:
-        print("Initializing AI2-THOR controller...")
-        controller = get_procthor_controller(headless=True)
-    else:
-        print("Skipping AI2-THOR controller initialization (input_view_for_verifier mode)")
+    print("Initializing AI2-THOR controller...")
+    controller = get_procthor_controller(headless=True)
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -481,7 +479,7 @@ def main():
                 # The verifier observes the GT view in this mode.
                 current_images = [gt_img]
 
-                print(f"Using gt_action: {gt_actions}")
+                # print(f"Using gt_action: {gt_actions}")
 
                 # Run verifier on generated view
                 verifier_images = [gt_img]
@@ -564,6 +562,24 @@ def main():
                     _, gt_meta = build_additional_view(controller, [0, 0, 0], gt_render_metadata)
                     if isinstance(gt_meta, dict):
                         gt_object_pixels = gt_meta.get("pixel_count")
+
+                    # In input_view_for_verifier mode, the "final view" is the input pose/view.
+                    # Measure pixels at the input pose so we can compute visibility = input/gt.
+                    if args.input_view_for_verifier:
+                        input_render_metadata = dict(render_metadata)
+                        input_render_metadata["position"] = render_position
+                        input_render_metadata["rotation"] = render_rotation
+                        if counting_object_type:
+                            input_render_metadata["pixel_count_object_type"] = counting_object_type
+                            input_render_metadata.pop("pixel_count_object_id", None)
+                        else:
+                            input_render_metadata["pixel_count_object_id"] = target_object_id
+                            input_render_metadata.pop("pixel_count_object_type", None)
+                        _, input_meta = build_additional_view(
+                            controller, [0, 0, 0], input_render_metadata
+                        )
+                        if isinstance(input_meta, dict):
+                            gen_object_pixels = input_meta.get("pixel_count")
                 except Exception:
                     gt_object_pixels = None
                 

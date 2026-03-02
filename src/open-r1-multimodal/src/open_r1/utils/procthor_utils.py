@@ -766,6 +766,7 @@ def build_additional_view(
     # - pixel_count_object_type: sum over all instances matching objectType
     pixel_count_object_id = render_metadata.get("pixel_count_object_id")
     pixel_count_object_type = render_metadata.get("pixel_count_object_type")
+
     if pixel_count_object_id or pixel_count_object_type:
         pixel_count = None
         try:
