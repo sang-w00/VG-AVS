@@ -6,15 +6,15 @@ echo "Using Python: $(which python)"
 echo "Python version: $(python --version)"
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
-DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_with_cot.jsonl}
+DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0228.jsonl}
 IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
 
 cd src/open-r1-multimodal
 
 # Configuration
-BASE_MODEL=${BASE_MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0228-20epoch-multi-20epoch}
-GRPO_RUN_NAME=${GRPO_RUN_NAME:-grpo-multistep-cot-3b-0228-20epoch-multi-20epoch}
-MAX_ROLLOUT_STEPS=${MAX_ROLLOUT_STEPS:-5}
+BASE_MODEL=${BASE_MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0301-20-20epoch}
+GRPO_RUN_NAME=${GRPO_RUN_NAME:-grpo-multistep-cot-3b-0301-20-20epoch}
+MAX_ROLLOUT_STEPS=${MAX_ROLLOUT_STEPS:-4}
 SAVE_ROLLOUT_VIS=${SAVE_ROLLOUT_VIS:-true}
 ROLLOUT_VIS_INTERVAL=${ROLLOUT_VIS_INTERVAL:-1}
 ROLLOUT_VIS_NUM_SAMPLES=${ROLLOUT_VIS_NUM_SAMPLES:-1}

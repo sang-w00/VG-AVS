@@ -6,12 +6,12 @@ MASTER_PORT=${MASTER_PORT:-12337}
 # ===== dataset ====== #
 PROJECT_ROOT=${PROJECT_ROOT:-/path/to/your/project}
 export PYTHONPATH=${PYTHONPATH:-}:${PROJECT_ROOT}/src/open-r1-multimodal/src
-DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0228.jsonl}
+DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0228_multiturn_undecidable.jsonl}
 IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
 cd src/open-r1-multimodal
-RUN_NAME=${RUN_NAME:-sft-multistep-cot-3b-0228-20epoch-undecidable}
-MODEL=${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
-# MODEL=${MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0228-20epoch-undecidable}
+RUN_NAME=${RUN_NAME:-sft-multistep-cot-3b-0301-20-20epoch}
+# MODEL=${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
+MODEL=${MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0301-20epoch}
 # Wandb settings
 export WANDB_PROJECT=${WANDB_PROJECT:-vgavs}
 REPORT_TO=${REPORT_TO:-wandb}
@@ -32,6 +32,15 @@ LEARNING_RATE=${LEARNING_RATE:-2.0e-5}
 NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-20}
 LOGGING_STEPS=${LOGGING_STEPS:-10}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-1}
+SAVE_STRATEGY=${SAVE_STRATEGY:-last}
+
+if [[ "${SAVE_STRATEGY}" == "last" ]]; then
+  SAVE_STRATEGY_ARG="no"
+  SAVE_FINAL_MODEL=true
+else
+  SAVE_STRATEGY_ARG="${SAVE_STRATEGY}"
+  SAVE_FINAL_MODEL=false
+fi
 # LoRA settings
 USE_PEFT=${USE_PEFT:-false}
 LORA_R=${LORA_R:-64}
@@ -55,6 +64,7 @@ echo "Data: ${DATA_JSONL}"
 echo "Image root: ${IMG_ROOT}"
 echo "Validation split: ${VAL_SPLIT_RATIO}"
 echo "Output dir: output/${RUN_NAME}"
+echo "Save strategy: ${SAVE_STRATEGY} (hf_save_strategy=${SAVE_STRATEGY_ARG}, save_final_model=${SAVE_FINAL_MODEL})"
 echo "==========================================="
 torchrun --nproc_per_node="${NPROC}" \
   --nnodes="${NNODES}" \
@@ -76,7 +86,8 @@ torchrun --nproc_per_node="${NPROC}" \
   --learning_rate ${LEARNING_RATE} \
   --num_train_epochs ${NUM_TRAIN_EPOCHS} \
   --logging_steps ${LOGGING_STEPS} \
-  --save_strategy epoch \
+  --save_strategy ${SAVE_STRATEGY_ARG} \
+  --save_final_model ${SAVE_FINAL_MODEL} \
   --save_total_limit ${SAVE_TOTAL_LIMIT} \
   --eval_strategy no \
   --bf16 \
