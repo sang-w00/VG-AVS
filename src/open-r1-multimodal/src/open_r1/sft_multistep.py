@@ -353,14 +353,8 @@ def main(script_args, training_args, model_args):
                     ]
                 })
             else:
-                if step_idx == 0:
-                    current_images = list(image_paths)
-                else:
-                    # Accumulate: previous trajectory images + new view images from history
-                    current_images = list(image_paths)  # Base trajectory images
-                    for h_entry in history:
-                        if h_entry.get("view_image_path"):
-                            current_images.append(h_entry["view_image_path"])
+                # Accumulate: previous trajectory images + new view images from history
+                current_images = list(image_paths)  # Base trajectory images
                 
                 # Build the multi-image chat prompt
                 step_prompt = []
@@ -376,7 +370,7 @@ def main(script_args, training_args, model_args):
                 })
                 
                 # 2. History Turns (Assistant -> User -> Assistant -> ...)
-                for h_entry in history:
+                for i, h_entry in enumerate(history):
                     # Assistant's previous action
                     step_prompt.append({
                         "role": "assistant",
@@ -385,10 +379,14 @@ def main(script_args, training_args, model_args):
                         ]
                     })
                     
-                    # User's new observation (view image)
-                    # Only add image content if there is a new view image path
+                    # User's new observation (view image of the next step)
+                    next_step_view = steps[i + 1].get("view_image", None)
+                    next_img_path = next_step_view if next_step_view and os.path.isabs(next_step_view) \
+                                   else (os.path.join(image_folder, next_step_view) if next_step_view else None)
+                    
                     obs_content = []
-                    if h_entry.get("view_image_path"):
+                    if next_img_path:
+                        current_images.append(next_img_path)
                         obs_content.append({"type": "image", "text": None})
                         
                     step_prompt.append({
