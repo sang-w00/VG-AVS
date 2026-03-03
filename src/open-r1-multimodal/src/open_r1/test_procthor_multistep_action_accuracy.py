@@ -25,6 +25,7 @@ from open_r1.utils.model_load import resolve_model_path
 from open_r1.utils.procthor_utils import build_additional_view, get_procthor_controller
 from open_r1.utils.prompt_templates import (
     MULTISTEP_ACTION_PROMPT_TEMPLATE,
+    SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE,
     MULTISTEP_FORMAT_PROMPT,
 )
 from open_r1.grpo_multistep import _parse_multistep_output
@@ -138,6 +139,11 @@ def main():
         "--use_refine",
         action="store_true",
         help="Use SFT GRPO format prompt with refined reasoning (initial guess + refine)",
+    )
+    parser.add_argument(
+        "--single_turn_vision",
+        action="store_true",
+        help="If set, predict action using only the current view image without history.",
     )
 
     args = parser.parse_args()
@@ -334,10 +340,16 @@ def main():
         elif item["question_type"] == "OCR":
             vqa_question += "\\nAnswer with a single number only."
 
-        action_question = (
-            MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question)
-            + MULTISTEP_FORMAT_PROMPT
-        )
+        if args.single_turn_vision:
+            action_question = (
+                SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question)
+                + MULTISTEP_FORMAT_PROMPT
+            )
+        else:
+            action_question = (
+                MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question)
+                + MULTISTEP_FORMAT_PROMPT
+            )
         
         gt_img_path = item.get("gt_image", steps[-1].get("view_image") if steps else "")
         if not os.path.isabs(gt_img_path) and args.image_root:
@@ -588,10 +600,26 @@ def main():
                     for step in range(args.max_rollout_steps):
                         print(f"--- Rollout Step {step+1}/{args.max_rollout_steps} ---")
                         
+                        if args.single_turn_vision:
+                            curr_img = current_images[-1]
+                            chat_to_use = [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image", "image": curr_img},
+                                        {"type": "text", "text": action_question},
+                                    ],
+                                }
+                            ]
+                            images_to_use = [curr_img]
+                        else:
+                            chat_to_use = chat
+                            images_to_use = current_images
+                        
                         if use_gemini_action or use_gpt_action:
                             api_messages = []
                             image_turn_idx = 0
-                            for turn in chat:
+                            for turn in chat_to_use:
                                 role = turn.get("role")
                                 if role == "assistant":
                                     assistant_texts = []
@@ -618,8 +646,8 @@ def main():
                                 user_message = {"role": "user"}
                                 if user_texts:
                                     user_message["text"] = "\n".join(user_texts)
-                                if has_image and image_turn_idx < len(current_images):
-                                    user_message["image"] = current_images[image_turn_idx]
+                                if has_image and image_turn_idx < len(images_to_use):
+                                    user_message["image"] = images_to_use[image_turn_idx]
                                     image_turn_idx += 1
                                 if "text" in user_message or "image" in user_message:
                                     api_messages.append(user_message)
@@ -650,12 +678,12 @@ def main():
                                 break
                         else:
                             chat_text = student_processor.apply_chat_template(
-                                chat, tokenize=False, add_generation_prompt=True
+                                chat_to_use, tokenize=False, add_generation_prompt=True
                             )
                             
                             inputs = student_processor(
                                 text=[chat_text],
-                                images=current_images,
+                                images=images_to_use,
                                 return_tensors="pt",
                                 padding=True,
                                 truncation=True,

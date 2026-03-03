@@ -49,6 +49,7 @@ from open_r1.trainer import GRPOConfig, VLMGRPOTrainer
 from open_r1.utils.model_load import get_vlm_module, initialize_verifier
 from open_r1.utils.prompt_templates import (
     MULTISTEP_ACTION_PROMPT_TEMPLATE,
+    SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE,
     MULTISTEP_FORMAT_PROMPT,
 )
 from open_r1.utils.rewards import (
@@ -164,6 +165,10 @@ class GRPOScriptArguments(ScriptArguments):
     rollout_vis_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Directory for rollout visualization images"},
+    )
+    single_turn_vision: bool = field(
+        default=False,
+        metadata={"help": "If True, predict action in a single turn using only the current view image and prompt."},
     )
 
 
@@ -595,7 +600,10 @@ class MultiStepGRPOTrainer(VLMGRPOTrainer):
         for sample_idx, x in enumerate(inputs):
             # Initialize per-sample state
             question = x.get("vqa_question", "")
-            base_prompt = MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=question) + MULTISTEP_FORMAT_PROMPT
+            if self.script_args.single_turn_vision:
+                base_prompt = SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=question) + MULTISTEP_FORMAT_PROMPT
+            else:
+                base_prompt = MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=question) + MULTISTEP_FORMAT_PROMPT
             
             # Load initial images
             image_paths = x.get("image_path", [])
@@ -624,21 +632,38 @@ class MultiStepGRPOTrainer(VLMGRPOTrainer):
             current_rotation = render_metadata.get("rotation", {})
             
             # Set up the chat for multi-turn rollout
-            chat = []
-            image_content = [{"type": "image", "text": None} for _ in current_images]
-            chat.append({
-                "role": "user",
-                "content": [
-                    *image_content,
-                    {"type": "text", "text": base_prompt}
-                ]
-            })
-            all_chat_images = list(current_images)
+            if self.script_args.single_turn_vision:
+                # In single turn vision, we only give the *last* current image and the prompt.
+                chat = []
+                chat.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "text": None},
+                        {"type": "text", "text": base_prompt}
+                    ]
+                })
+                # all_chat_images is just the single image we care about
+                all_chat_images = [current_images[-1]] if current_images else []
+            else:
+                chat = []
+                image_content = [{"type": "image", "text": None} for _ in current_images]
+                chat.append({
+                    "role": "user",
+                    "content": [
+                        *image_content,
+                        {"type": "text", "text": base_prompt}
+                    ]
+                })
+                all_chat_images = list(current_images)
 
             full_completion_text = ""
             step_texts_this_sample = []
             final_image = current_images[-1] if current_images else None
             step_count = 0
+            
+            sample_flat_chats = []
+            sample_flat_images = []
+            
             rollout_record = {
                 "question": question,
                 "solution": x.get("solution", ""),
@@ -694,6 +719,11 @@ class MultiStepGRPOTrainer(VLMGRPOTrainer):
                 
                 # Append assistant's response to the chat history
                 chat.append({"role": "assistant", "content": [{"type": "text", "text": step_text}]})
+                
+                if self.script_args.single_turn_vision:
+                    # Save the complete single turn chat for this step
+                    sample_flat_chats.append(list(chat))
+                    sample_flat_images.append(list(all_chat_images))
                 
                 # Parse output
                 parsed = _parse_multistep_output(step_text)
@@ -774,21 +804,39 @@ class MultiStepGRPOTrainer(VLMGRPOTrainer):
                 
                 # Update history for the next step
                 step_record["termination_reason"] = "continue"
-                all_chat_images.append(new_view)
-                chat.append({
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "text": None}
+                
+                if self.script_args.single_turn_vision:
+                    all_chat_images = [new_view]
+                    chat = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "text": None},
+                                {"type": "text", "text": base_prompt}
+                            ]
+                        }
                     ]
-                })
+                else:
+                    all_chat_images.append(new_view)
+                    chat.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "text": None}
+                        ]
+                    })
             
             all_completions_text.append(full_completion_text)
             all_final_images.append(final_image)
             all_step_counts.append(step_count)
             all_step_texts_per_sample.append(step_texts_this_sample)
             all_rollout_records.append(rollout_record)
-            trajectory_chat_list.append(chat)
-            trajectory_images_list.append(all_chat_images)
+            
+            if self.script_args.single_turn_vision:
+                trajectory_chat_list.append(sample_flat_chats)
+                trajectory_images_list.append(sample_flat_images)
+            else:
+                trajectory_chat_list.append(chat)
+                trajectory_images_list.append(all_chat_images)
         
         if DEBUG_MODE and _get_local_rank() == 0:
             avg_steps = np.mean(all_step_counts)
@@ -837,13 +885,32 @@ class MultiStepGRPOTrainer(VLMGRPOTrainer):
         
         # ================= NEW TRAJECTORY LOGP COMPUTATION (HSTAR STYLE) =================
         # Instead of flattening the steps, we tokenize the ENTIRE multi-turn trajectory per sample!
-        trajectory_input_dicts = [{"prompt": chat, "image_path": None} for chat in trajectory_chat_list]
-        traj_prompts_text = self.vlm_module.prepare_prompt(self.processing_class, trajectory_input_dicts)
+        if self.script_args.single_turn_vision:
+            flat_chat_list = []
+            flat_images_list = []
+            flat_advantages = []
+            for i in range(len(inputs)):
+                sample_chats = trajectory_chat_list[i]
+                sample_imgs = trajectory_images_list[i]
+                for sc, si in zip(sample_chats, sample_imgs):
+                    flat_chat_list.append(sc)
+                    flat_images_list.append(si)
+                    flat_advantages.append(advantages[i])
+                    
+            traj_input_dicts = [{"prompt": c, "image_path": None} for c in flat_chat_list]
+            traj_images_to_use = flat_images_list
+            traj_advantages = torch.tensor(flat_advantages, dtype=advantages.dtype, device=device)
+        else:
+            traj_input_dicts = [{"prompt": chat, "image_path": None} for chat in trajectory_chat_list]
+            traj_images_to_use = trajectory_images_list
+            traj_advantages = advantages
+            
+        traj_prompts_text = self.vlm_module.prepare_prompt(self.processing_class, traj_input_dicts)
         
         traj_inputs, _ = self.vlm_module.prepare_model_inputs(
             self.processing_class,
             traj_prompts_text,
-            trajectory_images_list,
+            traj_images_to_use,
             return_tensors="pt",
             padding=True,
             padding_side="left",
@@ -939,7 +1006,7 @@ class MultiStepGRPOTrainer(VLMGRPOTrainer):
             "completion_mask": traj_completion_mask,
             "old_per_token_logps": traj_old_per_token_logps,
             "ref_per_token_logps": traj_ref_per_token_logps,
-            "advantages": advantages,
+            "advantages": traj_advantages,
             "multimodal_inputs": traj_multimodal_inputs,
         }
 
@@ -1046,10 +1113,16 @@ def main(script_args, training_args, model_args):
             image_paths = [os.path.join(image_folder, img_path)]
         
         # Build action question
-        action_question = (
-            MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=example["question"])
-            + MULTISTEP_FORMAT_PROMPT
-        )
+        if script_args.single_turn_vision:
+            action_question = (
+                SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=example["question"])
+                + MULTISTEP_FORMAT_PROMPT
+            )
+        else:
+            action_question = (
+                MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=example["question"])
+                + MULTISTEP_FORMAT_PROMPT
+            )
         
         # Camera pose
         position_dict = first_step.get("position", {"x": 0.0, "y": 0.0, "z": 0.0})
