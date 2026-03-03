@@ -6,12 +6,12 @@ MASTER_PORT=${MASTER_PORT:-12337}
 # ===== dataset ====== #
 PROJECT_ROOT=${PROJECT_ROOT:-/path/to/your/project}
 export PYTHONPATH=${PYTHONPATH:-}:${PROJECT_ROOT}/src/open-r1-multimodal/src
-DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0228_multiturn_undecidable.jsonl}
+DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0302.jsonl}
 IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
 cd src/open-r1-multimodal
-RUN_NAME=${RUN_NAME:-sft-multistep-cot-3b-0301-20-20epoch}
-# MODEL=${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
-MODEL=${MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0301-20epoch}
+RUN_NAME=${RUN_NAME:-sft-multistep-cot-3b-0302-single-20epoch}
+MODEL=${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
+# MODEL=${MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0302-20epoch}
 # Wandb settings
 export WANDB_PROJECT=${WANDB_PROJECT:-vgavs}
 REPORT_TO=${REPORT_TO:-wandb}
@@ -98,6 +98,7 @@ torchrun --nproc_per_node="${NPROC}" \
   --run_name ${RUN_NAME} \
   --trust_remote_code true \
   --remove_unused_columns false \
+  --single_turn_vision true
 
 echo ""
 echo "==========================================="

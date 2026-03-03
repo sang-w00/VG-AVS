@@ -6,14 +6,15 @@ echo "Using Python: $(which python)"
 echo "Python version: $(python --version)"
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
-DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0228.jsonl}
+DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0302.jsonl}
 IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
 
 cd src/open-r1-multimodal
 
 # Configuration
-BASE_MODEL=${BASE_MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0301-20-20epoch}
-GRPO_RUN_NAME=${GRPO_RUN_NAME:-grpo-multistep-cot-3b-0301-20-20epoch}
+BASE_MODEL=${BASE_MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0302-20-20epoch}
+# BASE_MODEL=${BASE_MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
+GRPO_RUN_NAME=${GRPO_RUN_NAME:-grpo-multistep-3b-20-20epoch-0302}
 MAX_ROLLOUT_STEPS=${MAX_ROLLOUT_STEPS:-4}
 SAVE_ROLLOUT_VIS=${SAVE_ROLLOUT_VIS:-true}
 ROLLOUT_VIS_INTERVAL=${ROLLOUT_VIS_INTERVAL:-1}
@@ -44,7 +45,7 @@ echo "========================================="
 echo "Model: ${BASE_MODEL}"
 echo "Max rollout steps: ${MAX_ROLLOUT_STEPS}"
 echo "Rollout visualization: ${SAVE_ROLLOUT_VIS} (interval=${ROLLOUT_VIS_INTERVAL}, samples=${ROLLOUT_VIS_NUM_SAMPLES})"
-echo "Verifier: ${VERIFIER_MODEL_PATH:-qwen2.5vl:7b} (max_new_tokens=${VERIFIER_MAX_NEW_TOKENS:-16}, minibatch=${VERIFIER_MINIBATCH:-8})"
+echo "Verifier: ${VERIFIER_MODEL_PATH:-qwen2.5vl:7b} (max_new_tokens=${VERIFIER_MAX_NEW_TOKENS:-16}, minibatch=${VERIFIER_MINIBATCH:-4})"
 echo "Output: ${GRPO_OUTPUT_DIR}"
 echo ""
 
@@ -52,7 +53,7 @@ export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
 export DEBUG_MODE=${DEBUG_MODE:-1}
 export LOG_PATH="./debug_log_${GRPO_RUN_NAME}.txt"
 export VERIFIER_MAX_NEW_TOKENS=${VERIFIER_MAX_NEW_TOKENS:-16}
-export VERIFIER_MINIBATCH=${VERIFIER_MINIBATCH:-4}
+export VERIFIER_MINIBATCH=${VERIFIER_MINIBATCH:-2}
 export VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-qwen2.5vl:7b}
 
 TORCHRUN="$(dirname $(which python))/torchrun"

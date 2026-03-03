@@ -47,6 +47,7 @@ from open_r1.qwen2_5vl_monkey_patch import (
 from open_r1.utils.model_load import get_vlm_module
 from open_r1.utils.prompt_templates import (
     MULTISTEP_ACTION_PROMPT_TEMPLATE,
+    SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE,
     MULTISTEP_FORMAT_PROMPT,
 )
 from open_r1.vlm_modules import *
@@ -101,6 +102,10 @@ class SFTScriptArguments(ScriptArguments):
     save_final_model: bool = field(
         default=False,
         metadata={"help": "Save final model at end even when save_strategy is 'no'."},
+    )
+    single_turn_vision: bool = field(
+        default=False,
+        metadata={"help": "If True, predict action in a single turn using only the current view image and prompt."},
     )
 
 
@@ -331,48 +336,65 @@ def main(script_args, training_args, model_args):
                 example.get("target_object_visibility_level"),
             )
             
-            if step_idx == 0:
-                current_images = list(image_paths)
-            else:
-                # Accumulate: previous trajectory images + new view images from history
-                current_images = list(image_paths)  # Base trajectory images
-                for h_entry in history:
-                    if h_entry.get("view_image_path"):
-                        current_images.append(h_entry["view_image_path"])
-            
-            # Build the multi-image chat prompt
-            step_prompt = []
-            
-            # 1. Initial User Turn
-            first_img_doc = [{"type": "image", "text": None}]
-            step_prompt.append({
-                "role": "user",
-                "content": [
-                    *first_img_doc,
-                    {"type": "text", "text": base_prompt}
-                ]
-            })
-            
-            # 2. History Turns (Assistant -> User -> Assistant -> ...)
-            for h_entry in history:
-                # Assistant's previous action
+            if script_args.single_turn_vision:
+                base_prompt_single = SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + MULTISTEP_FORMAT_PROMPT
+                curr_img_path = view_image if view_image and os.path.isabs(view_image) \
+                                else (os.path.join(image_folder, view_image) if view_image else None)
+                if curr_img_path is None:
+                    curr_img_path = image_paths[0]
+                current_images = [curr_img_path]
+                
+                step_prompt = []
                 step_prompt.append({
-                    "role": "assistant",
+                    "role": "user",
                     "content": [
-                        {"type": "text", "text": f"<think> {h_entry['thinking']} </think>\n{h_entry['action_text']}"}
+                        {"type": "image", "text": None},
+                        {"type": "text", "text": base_prompt_single}
+                    ]
+                })
+            else:
+                if step_idx == 0:
+                    current_images = list(image_paths)
+                else:
+                    # Accumulate: previous trajectory images + new view images from history
+                    current_images = list(image_paths)  # Base trajectory images
+                    for h_entry in history:
+                        if h_entry.get("view_image_path"):
+                            current_images.append(h_entry["view_image_path"])
+                
+                # Build the multi-image chat prompt
+                step_prompt = []
+                
+                # 1. Initial User Turn
+                first_img_doc = [{"type": "image", "text": None}]
+                step_prompt.append({
+                    "role": "user",
+                    "content": [
+                        *first_img_doc,
+                        {"type": "text", "text": base_prompt}
                     ]
                 })
                 
-                # User's new observation (view image)
-                # Only add image content if there is a new view image path
-                obs_content = []
-                if h_entry.get("view_image_path"):
-                    obs_content.append({"type": "image", "text": None})
+                # 2. History Turns (Assistant -> User -> Assistant -> ...)
+                for h_entry in history:
+                    # Assistant's previous action
+                    step_prompt.append({
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": f"<think> {h_entry['thinking']} </think>\n{h_entry['action_text']}"}
+                        ]
+                    })
                     
-                step_prompt.append({
-                    "role": "user",
-                    "content": obs_content
-                })
+                    # User's new observation (view image)
+                    # Only add image content if there is a new view image path
+                    obs_content = []
+                    if h_entry.get("view_image_path"):
+                        obs_content.append({"type": "image", "text": None})
+                        
+                    step_prompt.append({
+                        "role": "user",
+                        "content": obs_content
+                    })
                 
             # Build GT output.
             thinking_text = f"<think> {thinking} </think>\n"
