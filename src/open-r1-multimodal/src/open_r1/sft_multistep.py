@@ -107,6 +107,10 @@ class SFTScriptArguments(ScriptArguments):
         default=False,
         metadata={"help": "If True, predict action in a single turn using only the current view image and prompt."},
     )
+    save_every_n_epochs: Optional[float] = field(
+        default=None,
+        metadata={"help": "If set to a positive value, save checkpoints every N epochs by converting to save_steps."},
+    )
 
 
 @dataclass
@@ -469,6 +473,23 @@ def main(script_args, training_args, model_args):
         splits['validation'] = train_val_split['test']
         print(f"Train split: {len(splits['train'])} examples")
         print(f"Validation split: {len(splits['validation'])} examples")
+
+    # Optional: save every N epochs by converting to save_steps for the current world/batch config.
+    if script_args.save_every_n_epochs is not None and script_args.save_every_n_epochs > 0:
+        world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
+        per_step_examples = (
+            int(training_args.per_device_train_batch_size)
+            * world_size
+            * max(1, int(training_args.gradient_accumulation_steps))
+        )
+        steps_per_epoch = max(1, int(np.ceil(len(splits['train']) / float(per_step_examples))))
+        save_steps = max(1, int(np.ceil(steps_per_epoch * float(script_args.save_every_n_epochs))))
+        training_args.save_strategy = "steps"
+        training_args.save_steps = save_steps
+        print(
+            f"Checkpoint schedule: every {script_args.save_every_n_epochs} epoch(s) "
+            f"=> every {save_steps} update steps (steps/epoch={steps_per_epoch}, world_size={world_size})"
+        )
     
     # Initialize model
     model_init_kwargs = getattr(training_args, 'model_init_kwargs', None) or {}
