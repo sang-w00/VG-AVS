@@ -21,9 +21,6 @@ AITHOR_GPU_DEVICE=${AITHOR_GPU_DEVICE:-${GPU_DEVICE}}
 export AITHOR_GPU_DEVICE
 STUDENT_DEVICE=${STUDENT_DEVICE:-cuda:0}
 
-# API Keys
-export GEMINI_API_KEY="AIzaSyBjEJlCV3w_Z6T7IHWnQce8qKdli7OqlV0"
-#export OPENAI_API_KEY="<OPENAI_API_KEY>"  # Uncomment and set when using GPT
 
 echo "Testing ProcTHOR action prediction model..."
 echo "Model: ${MODEL_PATH}"
