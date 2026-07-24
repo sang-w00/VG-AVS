@@ -35,6 +35,40 @@ def resolve_model_path(raw_path: str) -> str:
     return ALIAS_MAP.get(key, raw_path)
 
 
+def _has_model_artifacts(path: str) -> bool:
+    return os.path.exists(os.path.join(path, "config.json")) or os.path.exists(
+        os.path.join(path, "adapter_config.json")
+    )
+
+
+def resolve_checkpoint_path(model_name_or_path: str) -> str:
+    resolved_path = resolve_model_path(model_name_or_path)
+    if not os.path.isdir(resolved_path):
+        return resolved_path
+
+    if _has_model_artifacts(resolved_path):
+        return resolved_path
+
+    checkpoint_dirs = []
+    for entry in os.listdir(resolved_path):
+        candidate = os.path.join(resolved_path, entry)
+        if not os.path.isdir(candidate) or not entry.startswith("checkpoint-"):
+            continue
+        if not _has_model_artifacts(candidate):
+            continue
+        try:
+            step = int(entry.split("checkpoint-", 1)[1])
+        except ValueError:
+            continue
+        checkpoint_dirs.append((step, candidate))
+
+    if checkpoint_dirs:
+        checkpoint_dirs.sort(key=lambda item: item[0])
+        return checkpoint_dirs[-1][1]
+
+    return resolved_path
+
+
 def initialize_verifier(device=None):
     """Lazy load frozen verifier model (Qwen2.5-VL) for action-based accuracy reward.
 
@@ -139,6 +173,8 @@ def initialize_verifier(device=None):
 def get_vlm_module(model_name_or_path):
     import json
     import os
+
+    model_name_or_path = resolve_checkpoint_path(model_name_or_path)
 
     # Check if it's a checkpoint directory
     if os.path.isdir(model_name_or_path):

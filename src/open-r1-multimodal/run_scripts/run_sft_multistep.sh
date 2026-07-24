@@ -6,12 +6,12 @@ MASTER_PORT=${MASTER_PORT:-12337}
 # ===== dataset ====== #
 PROJECT_ROOT=${PROJECT_ROOT:-/path/to/your/project}
 export PYTHONPATH=${PYTHONPATH:-}:${PROJECT_ROOT}/src/open-r1-multimodal/src
-DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0302.jsonl}
+DATA_JSONL=${DATA_JSONL:-/home/andy2884/workspace/VG-AVS/data/avs_existence_train_final_0302_005.jsonl}
 IMG_ROOT=${IMG_ROOT:-/path/to/dataset}
 cd src/open-r1-multimodal
-RUN_NAME=${RUN_NAME:-sft-multistep-cot-3b-0302-single-20epoch}
+RUN_NAME=${RUN_NAME:-sft-multistep-cot-3b-0302-005-nothink-20epoch}
 MODEL=${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
-# MODEL=${MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0302-20epoch}
+# MODEL=${MODEL:-/home/andy2884/workspace/VG-AVS/src/open-r1-multimodal/output/sft-multistep-cot-3b-0302-005-20epoch}
 # Wandb settings
 export WANDB_PROJECT=${WANDB_PROJECT:-vgavs}
 REPORT_TO=${REPORT_TO:-wandb}
@@ -33,6 +33,8 @@ NUM_TRAIN_EPOCHS=${NUM_TRAIN_EPOCHS:-20}
 LOGGING_STEPS=${LOGGING_STEPS:-10}
 SAVE_TOTAL_LIMIT=${SAVE_TOTAL_LIMIT:-1}
 SAVE_STRATEGY=${SAVE_STRATEGY:-last}
+SAVE_EVERY_N_EPOCHS=${SAVE_EVERY_N_EPOCHS:-10}
+ONLY_ACTION=${ONLY_ACTION:-true}
 
 if [[ "${SAVE_STRATEGY}" == "last" ]]; then
   SAVE_STRATEGY_ARG="no"
@@ -65,6 +67,8 @@ echo "Image root: ${IMG_ROOT}"
 echo "Validation split: ${VAL_SPLIT_RATIO}"
 echo "Output dir: output/${RUN_NAME}"
 echo "Save strategy: ${SAVE_STRATEGY} (hf_save_strategy=${SAVE_STRATEGY_ARG}, save_final_model=${SAVE_FINAL_MODEL})"
+echo "Save every N epochs: ${SAVE_EVERY_N_EPOCHS}"
+echo "Only Action (No CoT): ${ONLY_ACTION}"
 echo "==========================================="
 torchrun --nproc_per_node="${NPROC}" \
   --nnodes="${NNODES}" \
@@ -87,8 +91,10 @@ torchrun --nproc_per_node="${NPROC}" \
   --num_train_epochs ${NUM_TRAIN_EPOCHS} \
   --logging_steps ${LOGGING_STEPS} \
   --save_strategy ${SAVE_STRATEGY_ARG} \
+  --save_every_n_epochs ${SAVE_EVERY_N_EPOCHS} \
   --save_final_model ${SAVE_FINAL_MODEL} \
   --save_total_limit ${SAVE_TOTAL_LIMIT} \
+  --only_action ${ONLY_ACTION} \
   --eval_strategy no \
   --bf16 \
   --torch_dtype bfloat16 \
@@ -98,7 +104,6 @@ torchrun --nproc_per_node="${NPROC}" \
   --run_name ${RUN_NAME} \
   --trust_remote_code true \
   --remove_unused_columns false \
-  --single_turn_vision true
 
 echo ""
 echo "==========================================="

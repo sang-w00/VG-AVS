@@ -112,5 +112,22 @@ MULTISTEP_FORMAT_PROMPT = (
     "For STOP decisions, output only the single tag <stop> without a closing tag.\n"
     "Each must be exactly one integer number (no units, no extra text).\n"
     "In the reasoning process, explicitly reason about whether you have enough information to answer the question "
-    "from the current view, or if you need to move to a better viewpoint.\n"
+"and from the current view, or if you need to move to a better viewpoint.\n"
+)
+
+# Multi-step format prompt for only action (no CoT)
+MULTISTEP_ONLY_ACTION_FORMAT_PROMPT = (
+    "Output your decision directly using one of the formats below.\n"
+    "\n"
+    "If you decide to MOVE, output exactly these three tags in order:\n"
+    "<head> X </head> <fwd> Y </fwd> <view> Z </view>\n"
+    "\n"
+    "If you decide to STOP (current view is sufficient), output:\n"
+    "<stop>\n"
+    "\n"
+    "The text between <head> and </head> must be the angle in degrees [-90, 90], "
+    "<fwd> and </fwd> must be the nonnegative forward distance, "
+    "and <view> and </view> must be the final viewing angle in degrees [-90, 90].\n"
+    "For STOP decisions, output only the single tag <stop> without a closing tag.\n"
+    "Each must be exactly one integer number (no units, no extra text).\n"
 )

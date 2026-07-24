@@ -21,12 +21,18 @@ from open_r1.utils.gemini_utils import (
     parse_mcq_letter_from_question,
     normalize_verifier_answer,
 )
-from open_r1.utils.model_load import resolve_model_path
+from open_r1.utils.model_load import (
+    get_vlm_module,
+    resolve_checkpoint_path,
+    resolve_model_path,
+)
 from open_r1.utils.procthor_utils import build_additional_view, get_procthor_controller
 from open_r1.utils.prompt_templates import (
+    ACTION_PROMPT_TEMPLATE,
     MULTISTEP_ACTION_PROMPT_TEMPLATE,
     SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE,
     MULTISTEP_FORMAT_PROMPT,
+    SFT_GRPO_FORMAT_PROMPT,
 )
 from open_r1.grpo_multistep import _parse_multistep_output
 from open_r1.utils.visualization import create_multistep_rollout_visualization
@@ -38,8 +44,208 @@ from open_r1.utils.string_utils import (
 )
 from open_r1.utils.visualization import create_multistep_rollout_visualization
 from peft import PeftModel
-from transformers import AutoModelForVision2Seq, AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from transformers import AutoModelForVision2Seq, AutoProcessor
 from tqdm import tqdm
+
+
+def _load_student_backend(model_path: str, torch_dtype: torch.dtype):
+    resolved_model_path = resolve_checkpoint_path(model_path)
+    if resolved_model_path != model_path:
+        print(f"Resolved checkpoint path: {resolved_model_path}")
+
+    vlm_module_cls = get_vlm_module(resolved_model_path)
+    vlm_module = vlm_module_cls()
+
+    is_lora_checkpoint = False
+    adapter_config_path = os.path.join(resolved_model_path, "adapter_config.json")
+    if os.path.exists(adapter_config_path):
+        is_lora_checkpoint = True
+        print(f"✓ Detected LoRA checkpoint at: {resolved_model_path}")
+
+    actual_processor_path = resolved_model_path
+    actual_model_path = resolved_model_path
+
+    if is_lora_checkpoint:
+        with open(adapter_config_path, "r") as f:
+            adapter_config = json.load(f)
+        base_model_name = adapter_config.get("base_model_name_or_path")
+        if not base_model_name:
+            raise ValueError(f"Missing base_model_name_or_path in {adapter_config_path}")
+        actual_model_path = base_model_name
+        print(f"Base model: {base_model_name}")
+
+    model_init_kwargs = {
+        "torch_dtype": torch_dtype,
+        "trust_remote_code": True,
+        "ignore_mismatched_sizes": True,
+    }
+    model_cls = vlm_module.get_model_class(actual_model_path, model_init_kwargs)
+
+    print(f"Loading base model: {actual_model_path}")
+    student_model = model_cls.from_pretrained(actual_model_path, **model_init_kwargs)
+
+    if is_lora_checkpoint:
+        print(f"Loading LoRA adapter from: {resolved_model_path}")
+        student_model = PeftModel.from_pretrained(student_model, resolved_model_path)
+        print("✓ LoRA checkpoint loaded successfully")
+    else:
+        print("Loading full model checkpoint...")
+
+    student_processor = AutoProcessor.from_pretrained(
+        actual_processor_path, trust_remote_code=True
+    )
+    vlm_module.post_model_init(student_model, student_processor)
+
+    return student_model, student_processor, vlm_module
+
+
+def _configure_student_processor(student_processor, student_vlm_module, student_model, args):
+    if student_vlm_module.get_vlm_key() == "internvl":
+        max_anyres_num = getattr(student_processor, "max_anyres_num", None)
+        if max_anyres_num is None:
+            max_anyres_num = getattr(student_model.config, "max_dynamic_patch", 12)
+        student_processor.max_anyres_num = max_anyres_num
+    else:
+        if args.max_pixels is not None and hasattr(student_processor, "image_processor"):
+            student_processor.image_processor.max_pixels = args.max_pixels
+        if args.min_pixels is not None and hasattr(student_processor, "image_processor"):
+            student_processor.image_processor.min_pixels = args.min_pixels
+
+
+def _get_student_model_dtype(student_model):
+    model_dtype = getattr(student_model, "dtype", None)
+    if model_dtype is not None:
+        return model_dtype
+    try:
+        return next(student_model.parameters()).dtype
+    except StopIteration:
+        return None
+
+
+def _prepare_student_inputs(
+    student_processor, student_vlm_module, student_model, chat_messages, images, device
+):
+    chat_text = student_processor.apply_chat_template(
+        chat_messages, tokenize=False, add_generation_prompt=True
+    )
+
+    if student_vlm_module.get_vlm_key() == "internvl":
+        inputs, _ = student_vlm_module.prepare_model_inputs(
+            student_processor,
+            prompts_text=[chat_text],
+            images=images,
+            return_tensors="pt",
+            padding=True,
+            padding_side="left",
+            add_special_tokens=False,
+        )
+    else:
+        inputs = student_processor(
+            text=[chat_text],
+            images=images,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=4096,
+        )
+
+    inputs = {
+        k: v.to(device) if isinstance(v, torch.Tensor) else v
+        for k, v in inputs.items()
+    }
+    model_dtype = _get_student_model_dtype(student_model)
+    if model_dtype is not None:
+        inputs = {
+            k: v.to(dtype=model_dtype) if isinstance(v, torch.Tensor) and torch.is_floating_point(v) else v
+            for k, v in inputs.items()
+        }
+    return chat_text, inputs
+
+
+def _get_student_eos_token_id(student_processor, student_model, student_vlm_module):
+    if student_vlm_module.get_vlm_key() == "internvl":
+        try:
+            return student_vlm_module.get_eos_token_id(student_processor)
+        except Exception:
+            pass
+
+    if hasattr(student_processor, "tokenizer") and student_processor.tokenizer is not None:
+        return student_processor.tokenizer.eos_token_id
+
+    eos_token_id = getattr(student_processor, "eos_token_id", None)
+    if eos_token_id is not None:
+        return eos_token_id
+
+    generation_config = getattr(student_model, "generation_config", None)
+    return getattr(generation_config, "eos_token_id", None)
+
+
+def _decode_student_output(student_processor, student_vlm_module, inputs, generated_ids):
+    completion_ids = generated_ids
+    if (
+        not student_vlm_module.is_embeds_input()
+        and isinstance(generated_ids, torch.Tensor)
+        and generated_ids.ndim == 2
+        and "input_ids" in inputs
+    ):
+        prompt_length = inputs["input_ids"].size(1)
+        if generated_ids.size(1) >= prompt_length:
+            completion_ids = generated_ids[:, prompt_length:]
+
+    try:
+        return student_processor.batch_decode(completion_ids, skip_special_tokens=True)[0]
+    except Exception:
+        return student_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+
+def _build_student_generation_kwargs(
+    student_vlm_module, eos_token_id: Optional[int], max_new_tokens: int
+):
+    generation_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": False,
+        "pad_token_id": eos_token_id,
+        "eos_token_id": eos_token_id,
+        "output_attentions": False,
+        "output_hidden_states": False,
+        "return_dict_in_generate": False,
+    }
+    if student_vlm_module.get_vlm_key() != "internvl":
+        generation_kwargs["use_cache"] = True
+    return generation_kwargs
+
+
+def _filter_generate_inputs(student_vlm_module, inputs):
+    non_generate_params = set(student_vlm_module.get_non_generate_params())
+    return {k: v for k, v in inputs.items() if k not in non_generate_params}
+
+
+def _build_action_question(args, vqa_question: str) -> str:
+    if args.use_refine:
+        return ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + SFT_GRPO_FORMAT_PROMPT
+    if args.single_turn_vision:
+        return (
+            SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question)
+            + MULTISTEP_FORMAT_PROMPT
+        )
+    return MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + MULTISTEP_FORMAT_PROMPT
+
+
+def _parse_rollout_step_output(step_output: str, use_refine: bool) -> dict:
+    if use_refine:
+        thinking_process, actions_text = extract_thinking_and_action_string(step_output)
+        predicted_actions = action_string_to_list(actions_text)
+        if predicted_actions == [0, 0, 0] and not re.search(r"<head>.*?</head>", step_output, re.IGNORECASE | re.DOTALL):
+            predicted_actions = None
+            actions_text = ""
+        return {
+            "thinking": thinking_process,
+            "action_text": actions_text,
+            "action": predicted_actions,
+            "is_stop": False,
+            "is_unknown": False,
+        }
+    return _parse_multistep_output(step_output)
 
 
 def main():
@@ -80,7 +286,10 @@ def main():
         "--verifier_device", default="cpu", help="Device for verifier model"
     )
     parser.add_argument(
-        "--gpu_device", type=int, default=0, help="GPU device for AI2-THOR rendering"
+        "--gpu_device",
+        type=int,
+        default=None,
+        help="Logical GPU device for AI2-THOR rendering (inside CUDA_VISIBLE_DEVICES)",
     )
     parser.add_argument(
         "--input_view_for_verifier",
@@ -175,6 +384,7 @@ def main():
     # Load student model (skip if input_view_for_verifier or gt_view_for_verifier mode)
     student_model = None
     student_processor = None
+    student_vlm_module = None
     use_gemini_action = False
     use_gpt_action = False
     gemini_action_model_id = None
@@ -198,53 +408,12 @@ def main():
             )
         else:
             print(f"Loading student model from {args.model_path}...")
-
-            # Check if this is a LoRA checkpoint
-            is_lora_checkpoint = False
-            adapter_config_path = os.path.join(args.model_path, "adapter_config.json")
-            if os.path.exists(adapter_config_path):
-                is_lora_checkpoint = True
-                print(f"✓ Detected LoRA checkpoint at: {args.model_path}")
-
-            # Determine base model path
-            if is_lora_checkpoint:
-                # Read adapter_config.json to get base model name
-                with open(adapter_config_path, "r") as f:
-                    adapter_config = json.load(f)
-                base_model_name = adapter_config.get(
-                    "base_model_name_or_path", "Qwen/Qwen2.5-VL-7B-Instruct"
-                )
-                print(f"Base model: {base_model_name}")
-                 # Detect model type from base model
-                print(f"Loading base model: {base_model_name}")
-                student_model = AutoModelForVision2Seq.from_pretrained(
-                    base_model_name,
-                    torch_dtype=torch.bfloat16,
-                    trust_remote_code=True,
-                    ignore_mismatched_sizes=True,
-                )
-                # Load LoRA adapter
-                print(f"Loading LoRA adapter from: {args.model_path}")
-                student_model = PeftModel.from_pretrained(
-                    student_model, args.model_path
-                )
-                print("✓ LoRA checkpoint loaded successfully")
-            else:
-                # Load full model checkpoint
-                print("Loading full model checkpoint...")
-                student_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    args.model_path,
-                    torch_dtype=torch.bfloat16
-                )
-
-            student_processor = AutoProcessor.from_pretrained(
-                args.model_path, trust_remote_code=True
+            student_model, student_processor, student_vlm_module = _load_student_backend(
+                args.model_path, torch.bfloat16
             )
-            # Set max_pixels and min_pixels if provided (must match training config)
-            if args.max_pixels is not None:
-                student_processor.image_processor.max_pixels = args.max_pixels
-            if args.min_pixels is not None:
-                student_processor.image_processor.min_pixels = args.min_pixels
+            _configure_student_processor(
+                student_processor, student_vlm_module, student_model, args
+            )
 
             for p in student_model.parameters():
                 p.requires_grad_(False)
@@ -278,6 +447,9 @@ def main():
         verifier_model.eval()
         for p in verifier_model.parameters():
             p.requires_grad_(False)
+
+    if args.gpu_device is not None:
+        os.environ["AITHOR_GPU_DEVICE"] = str(args.gpu_device)
 
     # Initialize AI2-THOR controller.
     # We also use it to compute pixel-based visibility (instance segmentation masks),
@@ -340,16 +512,7 @@ def main():
         elif item["question_type"] == "OCR":
             vqa_question += "\\nAnswer with a single number only."
 
-        if args.single_turn_vision:
-            action_question = (
-                SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question)
-                + MULTISTEP_FORMAT_PROMPT
-            )
-        else:
-            action_question = (
-                MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question)
-                + MULTISTEP_FORMAT_PROMPT
-            )
+        action_question = _build_action_question(args, vqa_question)
         
         gt_img_path = item.get("gt_image", steps[-1].get("view_image") if steps else "")
         if not os.path.isabs(gt_img_path) and args.image_root:
@@ -677,61 +840,45 @@ def main():
                                 print(f"Action prediction failed: {step_output}")
                                 break
                         else:
-                            chat_text = student_processor.apply_chat_template(
-                                chat_to_use, tokenize=False, add_generation_prompt=True
+                            _, inputs = _prepare_student_inputs(
+                                student_processor,
+                                student_vlm_module,
+                                student_model,
+                                chat_to_use,
+                                images_to_use,
+                                args.device,
                             )
-                            
-                            inputs = student_processor(
-                                text=[chat_text],
-                                images=images_to_use,
-                                return_tensors="pt",
-                                padding=True,
-                                truncation=True,
-                                max_length=4096,
-                            )
-                            inputs = {
-                                k: v.to(args.device) if isinstance(v, torch.Tensor) else v
-                                for k, v in inputs.items()
-                            }
-                            
+
                             student_model.eval()
                             if hasattr(student_model, "reset_cache"):
                                 student_model.reset_cache()
-                                
-                            gen = student_model.generate(
-                                **inputs,
-                                max_new_tokens=args.max_new_tokens,
-                                do_sample=False,
-                                pad_token_id=student_processor.tokenizer.eos_token_id,
-                                use_cache=True,
-                                output_attentions=False,
-                                output_hidden_states=False,
-                                return_dict_in_generate=False,
+
+                            eos_token_id = _get_student_eos_token_id(
+                                student_processor, student_model, student_vlm_module
                             )
-                            
-                            prompt_length = inputs["input_ids"].size(1)
-                            # For AutoModel generation we might get full sequence back
-                            # if the model is Qwen2VL
-                            if isinstance(student_model, Qwen2_5_VLForConditionalGeneration):
-                                completion_ids = gen[:, prompt_length:]
-                            else:
-                                completion_ids = gen
-                                
-                            try:
-                                step_output = student_processor.batch_decode(
-                                    completion_ids, skip_special_tokens=True
-                                )[0]
-                            except:
-                                step_output = student_processor.batch_decode(
-                                    gen, skip_special_tokens=True
-                                )[0]
+                            generation_kwargs = _build_student_generation_kwargs(
+                                student_vlm_module,
+                                eos_token_id,
+                                args.max_new_tokens,
+                            )
+                            generate_inputs = _filter_generate_inputs(
+                                student_vlm_module, inputs
+                            )
+                            gen = student_model.generate(
+                                **generate_inputs,
+                                **generation_kwargs,
+                            )
+
+                            step_output = _decode_student_output(
+                                student_processor, student_vlm_module, inputs, gen
+                            )
                             
                         print(f"Step {step+1} Output:\\n{step_output}\\n")
                         student_output = step_output if step_output else student_output
                         
                         chat.append({"role": "assistant", "content": [{"type": "text", "text": step_output}]})
                         
-                        parsed = _parse_multistep_output(step_output)
+                        parsed = _parse_rollout_step_output(step_output, args.use_refine)
                         thinking_process = parsed.get("thinking", "")
                         actions_text = parsed.get("action_text", "")
                         predicted_actions = parsed.get("action")

@@ -5,7 +5,7 @@ import requests
 import argparse
 from tqdm import tqdm
 
-OPENAI_API_KEY = ""
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 def encode_image(image_path):
     if not os.path.exists(image_path):
@@ -31,6 +31,9 @@ def convert_gt_action_to_text(action, visibility_level=None):
 
 
 def process_example(example, image_folder):
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY environment variable is required")
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENAI_API_KEY}"
@@ -81,7 +84,7 @@ def process_example(example, image_folder):
                     "- <fwd>: Forward movement distance (cm).\n"
                     "- <view>: Azimuth rotation (yaw) in degrees after moving. Positive is right, negative is left.\n"
                     "- <stop>: Stop and end the episode if the answer is completely visible.\n"
-                    "- <unknown>: The target is not visible, and it is impossible to determine its existence due to occlusion or lack of information.\n"
+                    "- <unknown>: The current view lacks query-relevant visual cues, so the appropriate action cannot be determined.\n\n"
                     "Note: There is NO tilt or pitch action. Both head and view are strictly left/right azimuth (yaw) rotations.\n\n"
                     "You need to provide the 'thinking' process (about 3 short sentences) that explains "
                     "why you are taking this Ground Truth action based on what you see, what you are trying to find, and your goal.\n"

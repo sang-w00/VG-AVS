@@ -49,6 +49,7 @@ from open_r1.utils.prompt_templates import (
     MULTISTEP_ACTION_PROMPT_TEMPLATE,
     SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE,
     MULTISTEP_FORMAT_PROMPT,
+    MULTISTEP_ONLY_ACTION_FORMAT_PROMPT,
 )
 from open_r1.vlm_modules import *
 from transformers import Trainer, TrainingArguments
@@ -110,6 +111,10 @@ class SFTScriptArguments(ScriptArguments):
     save_every_n_epochs: Optional[float] = field(
         default=None,
         metadata={"help": "If set to a positive value, save checkpoints every N epochs by converting to save_steps."},
+    )
+    only_action: bool = field(
+        default=False,
+        metadata={"help": "If True, train model to predict only action (no CoT)."},
     )
 
 
@@ -316,7 +321,10 @@ def main(script_args, training_args, model_args):
                 raise ValueError(f"Missing required field '{k}' in data example")
         
         vqa_question = example["question"]
-        base_prompt = MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + MULTISTEP_FORMAT_PROMPT
+        if script_args.only_action:
+            base_prompt = MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + MULTISTEP_ONLY_ACTION_FORMAT_PROMPT
+        else:
+            base_prompt = MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + MULTISTEP_FORMAT_PROMPT
         
         samples = []
         steps = example["steps"]
@@ -341,7 +349,10 @@ def main(script_args, training_args, model_args):
             )
             
             if script_args.single_turn_vision:
-                base_prompt_single = SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + MULTISTEP_FORMAT_PROMPT
+                if script_args.only_action:
+                    base_prompt_single = SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + MULTISTEP_ONLY_ACTION_FORMAT_PROMPT
+                else:
+                    base_prompt_single = SINGLE_TURN_MULTISTEP_ACTION_PROMPT_TEMPLATE.format(question=vqa_question) + MULTISTEP_FORMAT_PROMPT
                 curr_img_path = view_image if view_image and os.path.isabs(view_image) \
                                 else (os.path.join(image_folder, view_image) if view_image else None)
                 if curr_img_path is None:
@@ -376,12 +387,20 @@ def main(script_args, training_args, model_args):
                 # 2. History Turns (Assistant -> User -> Assistant -> ...)
                 for i, h_entry in enumerate(history):
                     # Assistant's previous action
-                    step_prompt.append({
-                        "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": f"<think> {h_entry['thinking']} </think>\n{h_entry['action_text']}"}
-                        ]
-                    })
+                    if script_args.only_action:
+                        step_prompt.append({
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": f"{h_entry['action_text']}"}
+                            ]
+                        })
+                    else:
+                        step_prompt.append({
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": f"<think> {h_entry['thinking']} </think>\n{h_entry['action_text']}"}
+                            ]
+                        })
                     
                     # User's new observation (view image of the next step)
                     next_step_view = steps[i + 1].get("view_image", None)
@@ -399,7 +418,10 @@ def main(script_args, training_args, model_args):
                     })
                 
             # Build GT output.
-            thinking_text = f"<think> {thinking} </think>\n"
+            if script_args.only_action:
+                thinking_text = ""
+            else:
+                thinking_text = f"<think> {thinking} </think>\n"
             visibility_lower = visibility_level.strip().lower() if isinstance(visibility_level, str) else ""
 
             undecidable_unknown = False
