@@ -190,4 +190,5 @@ temps/
 src/open-r1-multimodal/src/open_r1/grpo_jsonl_ocr.py
 src/open-r1-multimodal/output
 outputs
-data
+data/*
+!data/*.jsonl
